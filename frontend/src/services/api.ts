@@ -200,14 +200,49 @@ export const apiService = {
         const localUsers = getLocalUsersDB();
         const userRec = emailToUse ? localUsers[emailToUse] : null;
         const userAvatar = emailToUse ? localStorage.getItem(`brain_avatar_${emailToUse}`) : null;
+
+        let mobileVal = parsed.mobile || parsed.mobileNumber || userRec?.mobile || userRec?.mobileNumber || '';
+        let fullNameVal = user.displayName || parsed.full_name || parsed.fullName || userRec?.fullName || userRec?.full_name || 'EV Operator';
+        let evModelVal = parsed.ev_model || parsed.evModel || userRec?.evModel || userRec?.ev_model || 'Ather 450X';
+        let chemistryVal = parsed.battery_chemistry || parsed.batteryChemistry || userRec?.batteryChemistry || userRec?.battery_chemistry || 'NMC';
+
+        // Auto-heal missing profile details (e.g., mobile number) on cross-device login
+        if ((!mobileVal || fullNameVal === 'EV Operator') && emailToUse) {
+          try {
+            const cloudRec = await firebaseSyncService.getCloudUserProfile(emailToUse).catch(() => null);
+            if (cloudRec) {
+              mobileVal = mobileVal || cloudRec.mobile || cloudRec.mobileNumber || cloudRec.phone || '';
+              fullNameVal = cloudRec.full_name || cloudRec.fullName || fullNameVal;
+              evModelVal = cloudRec.ev_model || cloudRec.evModel || evModelVal;
+              chemistryVal = cloudRec.battery_chemistry || cloudRec.batteryChemistry || chemistryVal;
+
+              const healedProfile = {
+                id: user.uid,
+                email: user.email,
+                full_name: fullNameVal,
+                mobile: mobileVal,
+                role: parsed.role || userRec?.role || cloudRec.role || 'EV Rider / Owner',
+                ev_model: evModelVal,
+                battery_chemistry: chemistryVal,
+                avatar_photo: userAvatar || parsed.avatar_photo || '',
+              };
+              saveLocalUserDB(emailToUse, healedProfile);
+              try {
+                localStorage.setItem(`brain_profile_${emailToUse}`, JSON.stringify(healedProfile));
+                localStorage.setItem('brain_user_profile', JSON.stringify(healedProfile));
+              } catch (e) {}
+            }
+          } catch (e) {}
+        }
+
         return {
           id: user.uid,
           email: user.email,
-          full_name: user.displayName || parsed.full_name || parsed.fullName || userRec?.fullName || userRec?.full_name || 'EV Operator',
-          mobile: parsed.mobile || userRec?.mobile || userRec?.mobileNumber || '',
+          full_name: fullNameVal,
+          mobile: mobileVal,
           role: parsed.role || userRec?.role || 'EV Rider / Owner',
-          ev_model: parsed.ev_model || parsed.evModel || userRec?.evModel || userRec?.ev_model || 'Ather 450X',
-          battery_chemistry: parsed.battery_chemistry || parsed.batteryChemistry || userRec?.batteryChemistry || userRec?.battery_chemistry || 'NMC',
+          ev_model: evModelVal,
+          battery_chemistry: chemistryVal,
           avatar_photo: userAvatar || parsed.avatar_photo || '',
         };
       }

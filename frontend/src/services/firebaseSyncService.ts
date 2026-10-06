@@ -47,25 +47,35 @@ class FirebaseSyncService {
     if (!profile || !profile.email) return false;
     const emailKey = profile.email.toLowerCase().trim();
     const sanitizedEmail = emailKey.replace(/[^a-zA-Z0-9]/g, '_');
+    const mob = profile.mobile || profile.mobileNumber || profile.phone || '';
+    const fn = profile.full_name || profile.fullName || 'EV Operator';
+    const ev = profile.ev_model || profile.evModel || 'Ather 450X';
+    const chem = profile.battery_chemistry || profile.batteryChemistry || 'NMC';
+
     const userPayload = {
       id: profile.id || `usr_${Date.now()}`,
       email: emailKey,
-      full_name: profile.full_name || profile.fullName || 'EV Operator',
-      mobile: profile.mobile || '',
+      full_name: fn,
+      fullName: fn,
+      mobile: mob,
+      mobileNumber: mob,
+      phone: mob,
       role: profile.role || 'EV Rider / Owner',
-      ev_model: profile.ev_model || profile.evModel || 'Ather 450X',
-      battery_chemistry: profile.battery_chemistry || profile.batteryChemistry || 'NMC',
+      ev_model: ev,
+      evModel: ev,
+      battery_chemistry: chem,
+      batteryChemistry: chem,
       password: profile.password || profile.password_hash || '',
       updatedAt: new Date().toISOString(),
     };
 
     let success = false;
 
-    // 1. Try Firebase Realtime DB SDK with 1.5s timeout
+    // 1. Try Firebase Realtime DB SDK with 2.5s timeout
     if (this.db) {
       try {
         const userRef = ref(this.db, `users/${sanitizedEmail}`);
-        await this.withTimeout(set(userRef, userPayload), 1500);
+        await this.withTimeout(set(userRef, userPayload), 2500);
         success = true;
       } catch (e) {
         console.warn('Firebase SDK write warning:', e);
@@ -74,9 +84,15 @@ class FirebaseSyncService {
 
     // 2. Direct REST API Fallback (Guarantees write from Android APK or any browser!)
     try {
+      let tokenParam = '';
+      if (firebaseAuth?.currentUser) {
+        const idToken = await firebaseAuth.currentUser.getIdToken().catch(() => '');
+        if (idToken) tokenParam = `?auth=${idToken}`;
+      }
+
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2000);
-      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`, {
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json${tokenParam}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userPayload),
@@ -87,7 +103,7 @@ class FirebaseSyncService {
     } catch {
       try {
         const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 2000);
+        const timer2 = setTimeout(() => controller2.abort(), 2500);
         const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -107,15 +123,44 @@ class FirebaseSyncService {
    */
   public async getCloudUserProfile(email: string): Promise<any | null> {
     if (!email) return null;
-    const sanitizedEmail = email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
+    const emailKey = email.toLowerCase().trim();
+    const sanitizedEmail = emailKey.replace(/[^a-zA-Z0-9]/g, '_');
 
-    // 1. Try Firebase Realtime DB SDK with 1.5s timeout
+    let tokenParam = '';
+    try {
+      if (firebaseAuth?.currentUser) {
+        const idToken = await firebaseAuth.currentUser.getIdToken().catch(() => '');
+        if (idToken) tokenParam = `?auth=${idToken}`;
+      }
+    } catch {}
+
+    const normalizeUser = (val: any) => {
+      if (!val) return null;
+      const mob = val.mobile || val.mobileNumber || val.phone || '';
+      const fn = val.full_name || val.fullName || 'EV Operator';
+      const ev = val.ev_model || val.evModel || 'Ather 450X';
+      const chem = val.battery_chemistry || val.batteryChemistry || 'NMC';
+      return {
+        ...val,
+        full_name: fn,
+        fullName: fn,
+        mobile: mob,
+        mobileNumber: mob,
+        phone: mob,
+        ev_model: ev,
+        evModel: ev,
+        battery_chemistry: chem,
+        batteryChemistry: chem,
+      };
+    };
+
+    // 1. Try Firebase Realtime DB SDK with 2.5s timeout
     if (this.db) {
       try {
         const userRef = ref(this.db, `users/${sanitizedEmail}`);
-        const snapshot: any = await this.withTimeout(get(userRef), 1500);
+        const snapshot: any = await this.withTimeout(get(userRef), 2500);
         if (snapshot && snapshot.exists()) {
-          return snapshot.val();
+          return normalizeUser(snapshot.val());
         }
       } catch (e) {
         console.warn('Firebase SDK read warning:', e);
@@ -125,26 +170,30 @@ class FirebaseSyncService {
     // 2. Direct REST API Fallback (Fast REST lookup for cross-device login!)
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2000);
-      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`, {
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json${tokenParam}`, {
         signal: controller.signal,
       });
       clearTimeout(timer);
       if (restRes.ok) {
         const data = await restRes.json();
-        if (data && data.email) return data;
+        if (data && (data.email || data.full_name || data.mobile)) {
+          return normalizeUser(data);
+        }
       }
     } catch {
       try {
         const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 2000);
+        const timer2 = setTimeout(() => controller2.abort(), 2500);
         const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
           signal: controller2.signal,
         });
         clearTimeout(timer2);
         if (restRes2.ok) {
           const data2 = await restRes2.json();
-          if (data2 && data2.email) return data2;
+          if (data2 && (data2.email || data2.full_name || data2.mobile)) {
+            return normalizeUser(data2);
+          }
         }
       } catch {}
     }
