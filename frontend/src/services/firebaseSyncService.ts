@@ -37,43 +37,93 @@ class FirebaseSyncService {
    * Save Cloud User Profile to Firebase Realtime Database for seamless cross-device login
    */
   public async saveCloudUserProfile(profile: any): Promise<boolean> {
-    if (!this.db || !profile || !profile.email) return false;
-    try {
-      const sanitizedEmail = profile.email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
-      const userRef = ref(this.db, `users/${sanitizedEmail}`);
-      await set(userRef, {
-        id: profile.id || `usr_${Date.now()}`,
-        email: profile.email.toLowerCase().trim(),
-        full_name: profile.full_name || profile.fullName || 'EV Operator',
-        mobile: profile.mobile || '',
-        role: profile.role || 'EV Rider / Owner',
-        ev_model: profile.ev_model || profile.evModel || 'Ather 450X',
-        battery_chemistry: profile.battery_chemistry || profile.batteryChemistry || 'NMC',
-        password: profile.password || profile.password_hash || '',
-        updatedAt: new Date().toISOString(),
-      });
-      return true;
-    } catch (e) {
-      console.warn('Firebase cloud profile write warning:', e);
-      return false;
+    if (!profile || !profile.email) return false;
+    const emailKey = profile.email.toLowerCase().trim();
+    const sanitizedEmail = emailKey.replace(/[^a-zA-Z0-9]/g, '_');
+    const userPayload = {
+      id: profile.id || `usr_${Date.now()}`,
+      email: emailKey,
+      full_name: profile.full_name || profile.fullName || 'EV Operator',
+      mobile: profile.mobile || '',
+      role: profile.role || 'EV Rider / Owner',
+      ev_model: profile.ev_model || profile.evModel || 'Ather 450X',
+      battery_chemistry: profile.battery_chemistry || profile.batteryChemistry || 'NMC',
+      password: profile.password || profile.password_hash || '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    let success = false;
+
+    // 1. Try Firebase Realtime DB SDK
+    if (this.db) {
+      try {
+        const userRef = ref(this.db, `users/${sanitizedEmail}`);
+        await set(userRef, userPayload);
+        success = true;
+      } catch (e) {
+        console.warn('Firebase SDK write warning:', e);
+      }
     }
+
+    // 2. Direct REST API Fallback (Guarantees write from Android APK or any browser!)
+    try {
+      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userPayload),
+      });
+      if (restRes.ok) success = true;
+    } catch {
+      try {
+        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(userPayload),
+        });
+        if (restRes2.ok) success = true;
+      } catch {}
+    }
+
+    return success;
   }
 
   /**
    * Fetch Cloud User Profile from Firebase Realtime Database
    */
   public async getCloudUserProfile(email: string): Promise<any | null> {
-    if (!this.db || !email) return null;
-    try {
-      const sanitizedEmail = email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
-      const userRef = ref(this.db, `users/${sanitizedEmail}`);
-      const snapshot = await get(userRef);
-      if (snapshot.exists()) {
-        return snapshot.val();
+    if (!email) return null;
+    const sanitizedEmail = email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
+
+    // 1. Try Firebase Realtime DB SDK
+    if (this.db) {
+      try {
+        const userRef = ref(this.db, `users/${sanitizedEmail}`);
+        const snapshot = await get(userRef);
+        if (snapshot.exists()) {
+          return snapshot.val();
+        }
+      } catch (e) {
+        console.warn('Firebase SDK read warning:', e);
       }
-    } catch (e) {
-      console.warn('Firebase cloud profile read warning:', e);
     }
+
+    // 2. Direct REST API Fallback (Fast REST lookup for cross-device login!)
+    try {
+      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`);
+      if (restRes.ok) {
+        const data = await restRes.json();
+        if (data && data.email) return data;
+      }
+    } catch {
+      try {
+        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`);
+        if (restRes2.ok) {
+          const data2 = await restRes2.json();
+          if (data2 && data2.email) return data2;
+        }
+      } catch {}
+    }
+
     return null;
   }
 

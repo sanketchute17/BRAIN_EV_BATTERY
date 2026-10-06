@@ -504,10 +504,7 @@ export const apiService = {
       localStorage.setItem(`brain_profile_${emailKey}`, JSON.stringify(newUserRecord));
     } catch (e) {}
 
-    // Save user profile to Firebase Cloud Realtime Database for cross-device access!
-    firebaseSyncService.saveCloudUserProfile(newUserRecord).catch(() => {});
-
-    // TIER 1: Firebase Cloud Auth Registration
+    // TIER 1: Firebase Cloud Auth Registration & Cloud Profile Persistence
     if (isFirebaseConfigured() && firebaseAuth) {
       try {
         const userCredential = await createUserWithEmailAndPassword(firebaseAuth, emailKey, payload.password || '');
@@ -522,6 +519,9 @@ export const apiService = {
         }
       }
     }
+
+    // Await Firebase Cloud Realtime Database profile save for cross-device access!
+    await firebaseSyncService.saveCloudUserProfile(newUserRecord).catch(() => {});
 
     // TIER 2: Supabase Cloud Auth Registration
     if (isSupabaseConfigured() && supabase) {
