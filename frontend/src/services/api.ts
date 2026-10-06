@@ -19,6 +19,7 @@ import {
 import type { User as FirebaseUser } from 'firebase/auth';
 
 import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { firebaseSyncService } from './firebaseSyncService';
 
 const PRIMARY_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 const FALLBACK_API_URL = 'https://brain-backend-wrhg.onrender.com/api/v1';
@@ -26,16 +27,31 @@ const FALLBACK_API_URL = 'https://brain-backend-wrhg.onrender.com/api/v1';
 let activeApiUrl = PRIMARY_API_URL;
 
 async function fetchWithFailover(endpoint: string, options: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
+
   try {
-    const res = await fetch(`${activeApiUrl}${endpoint}`, options);
+    const res = await fetch(`${activeApiUrl}${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
     return res;
   } catch {
+    clearTimeout(timeoutId);
     if (activeApiUrl !== FALLBACK_API_URL) {
+      const fallbackController = new AbortController();
+      const fallbackTimeout = setTimeout(() => fallbackController.abort(), 2500);
       try {
-        const fallbackRes = await fetch(`${FALLBACK_API_URL}${endpoint}`, options);
+        const fallbackRes = await fetch(`${FALLBACK_API_URL}${endpoint}`, {
+          ...options,
+          signal: fallbackController.signal,
+        });
+        clearTimeout(fallbackTimeout);
         activeApiUrl = FALLBACK_API_URL;
         return fallbackRes;
       } catch {
+        clearTimeout(fallbackTimeout);
         // Fallthrough
       }
     }
@@ -279,7 +295,7 @@ export const apiService = {
   },
 
   /**
-   * User Login API Call (Firebase -> Supabase -> FastAPI -> Cloud DB -> Local DB)
+   * User Login API Call (Fast-Path Local DB -> Firebase -> Supabase -> FastAPI -> Cloud DB)
    */
   async login(payload: UserLoginPayload): Promise<AuthResponse> {
     const emailKey = payload.email.toLowerCase().trim();
@@ -291,9 +307,49 @@ export const apiService = {
       this.clearStoredToken();
     }
 
+    const localUsers = getLocalUsersDB();
+    const localRecord = localUsers[emailKey];
+    const specificProfileStr = localStorage.getItem(`brain_profile_${emailKey}`);
+    const specificProfile = specificProfileStr ? JSON.parse(specificProfileStr) : null;
+
+    // FAST-PATH: If account exists in local DB, verify password immediately (< 50ms)
+    if (localRecord || specificProfile) {
+      const storedPass = localRecord?.password || specificProfile?.password;
+      if (storedPass && storedPass !== password) {
+        throw new Error('Incorrect password. Please verify your credentials.');
+      }
+
+      const userAvatar = localStorage.getItem(`brain_avatar_${emailKey}`);
+      const authData: AuthResponse = {
+        access_token: localRecord?.access_token || specificProfile?.access_token || `local_jwt_token_${Date.now()}`,
+        user_id: localRecord?.id || specificProfile?.id || `usr_${Date.now()}`,
+        email: emailKey,
+        full_name: localRecord?.fullName || localRecord?.full_name || specificProfile?.full_name || specificProfile?.fullName || 'EV Operator',
+        mobile: localRecord?.mobile || localRecord?.mobileNumber || specificProfile?.mobile || '',
+        role: localRecord?.role || specificProfile?.role || 'EV Rider / Owner',
+        ev_model: localRecord?.evModel || localRecord?.ev_model || specificProfile?.ev_model || specificProfile?.evModel || 'Ather 450X',
+        battery_chemistry: localRecord?.batteryChemistry || localRecord?.battery_chemistry || specificProfile?.battery_chemistry || specificProfile?.batteryChemistry || 'NMC',
+        avatar_photo: userAvatar || localRecord?.avatar_photo || specificProfile?.avatar_photo || '',
+      };
+
+      saveLocalUserDB(emailKey, authData);
+      this.setStoredToken(authData.access_token, authData);
+
+      // Async background sync to Firebase Auth (non-blocking)
+      if (isFirebaseConfigured() && firebaseAuth) {
+        signInWithEmailAndPassword(firebaseAuth, emailKey, password).catch(() => {
+          createUserWithEmailAndPassword(firebaseAuth, emailKey, password)
+            .then((cred) => updateProfile(cred.user, { displayName: authData.full_name }))
+            .catch(() => {});
+        });
+      }
+
+      return authData;
+    }
+
     let firebaseErrorMsg: string | null = null;
 
-    // TIER 1: Firebase Cloud Auth
+    // TIER 1: Firebase Cloud Auth (For accounts registered on another browser/device)
     if (isFirebaseConfigured() && firebaseAuth) {
       if (firebaseAuth.currentUser && firebaseAuth.currentUser.email?.toLowerCase().trim() !== emailKey) {
         await firebaseAuth.signOut().catch(() => {});
@@ -303,24 +359,9 @@ export const apiService = {
         const fbUser = userCredential.user;
         const idToken = await fbUser.getIdToken();
 
-        const localUsers = getLocalUsersDB();
-        let userRecord: Record<string, any> = localUsers[emailKey] || {};
-
-        // Sync cross-device user profile attributes (role, ev_model, chemistry)
-        if (isSupabaseConfigured() && supabase) {
-          try {
-            const { data: cloudProf } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('email', emailKey)
-              .maybeSingle();
-            if (cloudProf) {
-              userRecord = { ...cloudProf, ...userRecord };
-            }
-          } catch {
-            // Ignore DB sync fallback
-          }
-        }
+        // Cross-device cloud user profile lookup
+        let cloudUserRec = await firebaseSyncService.getCloudUserProfile(emailKey).catch(() => null);
+        let userRecord: Record<string, any> = cloudUserRec || localUsers[emailKey] || {};
 
         const userAvatar = localStorage.getItem(`brain_avatar_${emailKey}`);
         const authData: AuthResponse = {
@@ -339,17 +380,39 @@ export const apiService = {
         return authData;
       } catch (fbErr: any) {
         if (fbErr.code === 'auth/wrong-password' || fbErr.code === 'auth/invalid-credential') {
-          firebaseErrorMsg = 'Incorrect password. Please verify your credentials.';
+          throw new Error('Incorrect password. Please verify your credentials.');
         } else if (fbErr.code === 'auth/user-not-found') {
           firebaseErrorMsg = 'No account found with this email address. Please register a new account.';
         } else {
           firebaseErrorMsg = fbErr.message || 'Firebase authentication failed.';
         }
-        // Fallthrough to Tier 2/3/4 Cloud DB check instead of abruptly stopping!
       }
     }
 
-    // TIER 2: Supabase Cloud Auth
+    // TIER 2: Firebase Realtime Cloud DB Lookup for Cross-Device Login
+    const cloudUserRec = await firebaseSyncService.getCloudUserProfile(emailKey).catch(() => null);
+    if (cloudUserRec) {
+      const storedPass = cloudUserRec.password || cloudUserRec.password_hash;
+      if (storedPass && storedPass !== password) {
+        throw new Error('Incorrect password. Please verify your credentials.');
+      }
+
+      const authData: AuthResponse = {
+        access_token: `cloud_token_${Date.now()}`,
+        user_id: cloudUserRec.id || `usr_${Date.now()}`,
+        email: emailKey,
+        full_name: cloudUserRec.full_name || cloudUserRec.fullName || 'EV Operator',
+        mobile: cloudUserRec.mobile || '',
+        role: cloudUserRec.role || 'EV Rider / Owner',
+        ev_model: cloudUserRec.ev_model || cloudUserRec.evModel || 'Ather 450X',
+        battery_chemistry: cloudUserRec.battery_chemistry || cloudUserRec.batteryChemistry || 'NMC',
+      };
+      saveLocalUserDB(emailKey, authData);
+      this.setStoredToken(authData.access_token, authData);
+      return authData;
+    }
+
+    // TIER 3: Supabase Cloud Auth
     if (isSupabaseConfigured() && supabase) {
       try {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -359,7 +422,6 @@ export const apiService = {
 
         if (!error && data?.session) {
           const userMeta = data.user?.user_metadata || {};
-          const localUsers = getLocalUsersDB();
           const localRecord = localUsers[emailKey] || {};
 
           const authData: AuthResponse = {
@@ -375,22 +437,16 @@ export const apiService = {
 
           saveLocalUserDB(emailKey, authData);
           this.setStoredToken(authData.access_token, authData);
-
-          // Auto-sync user into Firebase Cloud Auth if missing
-          if (isFirebaseConfigured() && firebaseAuth) {
-            createUserWithEmailAndPassword(firebaseAuth, emailKey, password)
-              .then((cred) => updateProfile(cred.user, { displayName: authData.full_name }))
-              .catch(() => {});
-          }
-
           return authData;
+        } else if (error && (error.message.includes('Invalid login credentials') || error.message.includes('Invalid password'))) {
+          throw new Error('Incorrect password. Please verify your credentials.');
         }
-      } catch {
-        // Fallthrough
+      } catch (e: any) {
+        if (e.message && e.message.includes('Incorrect password')) throw e;
       }
     }
 
-    // TIER 3: FastAPI Backend Server (Real SQL Online Database)
+    // TIER 4: FastAPI Backend Server (Real SQL Online Database with 2.5s Timeout)
     try {
       const response = await fetchWithFailover('/auth/login', {
         method: 'POST',
@@ -400,7 +456,6 @@ export const apiService = {
 
       if (response.ok) {
         const data: AuthResponse = await response.json();
-        const localUsers = getLocalUsersDB();
         const userRecord = localUsers[emailKey] || {};
         data.mobile = data.mobile || userRecord.mobile || userRecord.mobileNumber || '';
         data.role = data.role || userRecord.role || 'EV Rider / Owner';
@@ -408,102 +463,18 @@ export const apiService = {
         data.battery_chemistry = data.battery_chemistry || userRecord.batteryChemistry || 'NMC';
         saveLocalUserDB(emailKey, data);
         this.setStoredToken(data.access_token, data);
-
-        // Auto-sync user into Firebase Cloud Auth if missing
-        if (isFirebaseConfigured() && firebaseAuth) {
-          createUserWithEmailAndPassword(firebaseAuth, emailKey, password)
-            .then((cred) => updateProfile(cred.user, { displayName: data.full_name }))
-            .catch(() => {});
-        }
-
         return data;
-      }
-    } catch {
-      // Backend offline or error -> Fallthrough
-    }
-
-    // TIER 4: Cloud DB Profile & Cross-Device Sync Fallback
-    if (isSupabaseConfigured() && supabase) {
-      try {
-        const { data: cloudProfile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('email', emailKey)
-          .maybeSingle();
-
-        if (cloudProfile) {
-          const storedPass = cloudProfile.password_hash || cloudProfile.password;
-          if (storedPass && storedPass !== password) {
-            throw new Error('Incorrect password. Please verify your credentials.');
-          }
-
-          const authData: AuthResponse = {
-            access_token: `sb_cloud_token_${Date.now()}`,
-            user_id: cloudProfile.id || `usr_${Date.now()}`,
-            email: cloudProfile.email || emailKey,
-            full_name: cloudProfile.full_name || cloudProfile.fullName || 'EV Operator',
-            mobile: cloudProfile.mobile || '',
-            role: cloudProfile.role || 'EV Rider / Owner',
-            ev_model: cloudProfile.ev_model || 'Ather 450X',
-            battery_chemistry: cloudProfile.battery_chemistry || 'NMC',
-          };
-          saveLocalUserDB(emailKey, authData);
-          this.setStoredToken(authData.access_token, authData);
-
-          // Auto-sync user into Firebase Cloud Auth if missing
-          if (isFirebaseConfigured() && firebaseAuth) {
-            createUserWithEmailAndPassword(firebaseAuth, emailKey, password)
-              .then((cred) => updateProfile(cred.user, { displayName: authData.full_name }))
-              .catch(() => {});
-          }
-
-          return authData;
-        }
-      } catch (e: any) {
-        if (e.message && e.message.includes('Incorrect password')) {
-          throw e;
-        }
-      }
-    }
-
-    // TIER 5: Check local storage record for same-device fallback
-    const localUsers = getLocalUsersDB();
-    const localRecord = localUsers[emailKey];
-
-    if (localRecord) {
-      if (localRecord.password && localRecord.password !== password) {
+      } else if (response.status === 401) {
         throw new Error('Incorrect password. Please verify your credentials.');
       }
-
-      const authData: AuthResponse = {
-        access_token: `local_jwt_token_${Date.now()}`,
-        user_id: localRecord.id || `usr_${Date.now()}`,
-        email: emailKey,
-        full_name: localRecord.fullName || localRecord.full_name || 'EV Operator',
-        mobile: localRecord.mobile || localRecord.mobileNumber || '',
-        role: localRecord.role || 'EV Rider / Owner',
-        ev_model: localRecord.evModel || localRecord.ev_model || 'Ather 450X',
-        battery_chemistry: localRecord.batteryChemistry || localRecord.battery_chemistry || 'NMC',
-      };
-      saveLocalUserDB(emailKey, authData);
-      this.setStoredToken(authData.access_token, authData);
-
-      // Try auto-syncing to Cloud DB & Firebase Auth
-      if (isFirebaseConfigured() && firebaseAuth) {
-        createUserWithEmailAndPassword(firebaseAuth, emailKey, password)
-          .then((cred) => updateProfile(cred.user, { displayName: authData.full_name }))
-          .catch(() => {});
-      }
-
-      return authData;
+    } catch (e: any) {
+      if (e.message && e.message.includes('Incorrect password')) throw e;
     }
 
-    // If Firebase explicitly returned an error message like incorrect password
     if (firebaseErrorMsg) {
       throw new Error(firebaseErrorMsg);
     }
 
-    // Unregistered Account Protection: Reject login if account does not exist in any database
     throw new Error('No account found with this email address. Please register a new account.');
   },
 
@@ -532,6 +503,9 @@ export const apiService = {
     try {
       localStorage.setItem(`brain_profile_${emailKey}`, JSON.stringify(newUserRecord));
     } catch (e) {}
+
+    // Save user profile to Firebase Cloud Realtime Database for cross-device access!
+    firebaseSyncService.saveCloudUserProfile(newUserRecord).catch(() => {});
 
     // TIER 1: Firebase Cloud Auth Registration
     if (isFirebaseConfigured() && firebaseAuth) {

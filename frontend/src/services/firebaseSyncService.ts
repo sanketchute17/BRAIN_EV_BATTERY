@@ -1,5 +1,5 @@
 import { firebaseApp } from './firebaseClient';
-import { getDatabase, ref, set, push, onValue, off, serverTimestamp } from 'firebase/database';
+import { getDatabase, ref, set, push, onValue, off, serverTimestamp, get } from 'firebase/database';
 import type { NormalizedBatteryState } from '../types/telemetry';
 import { PinnEngine, type PinnRiskAnalysis } from './pinnEngine';
 
@@ -31,6 +31,50 @@ class FirebaseSyncService {
       console.warn('Firebase Realtime DB fallback:', e);
       this.isConnected = false;
     }
+  }
+
+  /**
+   * Save Cloud User Profile to Firebase Realtime Database for seamless cross-device login
+   */
+  public async saveCloudUserProfile(profile: any): Promise<boolean> {
+    if (!this.db || !profile || !profile.email) return false;
+    try {
+      const sanitizedEmail = profile.email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
+      const userRef = ref(this.db, `users/${sanitizedEmail}`);
+      await set(userRef, {
+        id: profile.id || `usr_${Date.now()}`,
+        email: profile.email.toLowerCase().trim(),
+        full_name: profile.full_name || profile.fullName || 'EV Operator',
+        mobile: profile.mobile || '',
+        role: profile.role || 'EV Rider / Owner',
+        ev_model: profile.ev_model || profile.evModel || 'Ather 450X',
+        battery_chemistry: profile.battery_chemistry || profile.batteryChemistry || 'NMC',
+        password: profile.password || profile.password_hash || '',
+        updatedAt: new Date().toISOString(),
+      });
+      return true;
+    } catch (e) {
+      console.warn('Firebase cloud profile write warning:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Fetch Cloud User Profile from Firebase Realtime Database
+   */
+  public async getCloudUserProfile(email: string): Promise<any | null> {
+    if (!this.db || !email) return null;
+    try {
+      const sanitizedEmail = email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
+      const userRef = ref(this.db, `users/${sanitizedEmail}`);
+      const snapshot = await get(userRef);
+      if (snapshot.exists()) {
+        return snapshot.val();
+      }
+    } catch (e) {
+      console.warn('Firebase cloud profile read warning:', e);
+    }
+    return null;
   }
 
   /**
