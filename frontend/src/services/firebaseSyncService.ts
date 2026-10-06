@@ -21,10 +21,17 @@ class FirebaseSyncService {
     this.initDatabase();
   }
 
+  private withTimeout<T>(promise: Promise<T>, ms: number = 1500): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Firebase DB request timed out')), ms)),
+    ]);
+  }
+
   private initDatabase() {
     try {
       if (firebaseApp) {
-        this.db = getDatabase(firebaseApp);
+        this.db = getDatabase(firebaseApp, 'https://brain-70dcd-default-rtdb.firebaseio.com');
         this.isConnected = true;
       }
     } catch (e) {
@@ -54,11 +61,11 @@ class FirebaseSyncService {
 
     let success = false;
 
-    // 1. Try Firebase Realtime DB SDK
+    // 1. Try Firebase Realtime DB SDK with 1.5s timeout
     if (this.db) {
       try {
         const userRef = ref(this.db, `users/${sanitizedEmail}`);
-        await set(userRef, userPayload);
+        await this.withTimeout(set(userRef, userPayload), 1500);
         success = true;
       } catch (e) {
         console.warn('Firebase SDK write warning:', e);
@@ -67,19 +74,27 @@ class FirebaseSyncService {
 
     // 2. Direct REST API Fallback (Guarantees write from Android APK or any browser!)
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
       const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userPayload),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       if (restRes.ok) success = true;
     } catch {
       try {
+        const controller2 = new AbortController();
+        const timer2 = setTimeout(() => controller2.abort(), 2000);
         const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(userPayload),
+          signal: controller2.signal,
         });
+        clearTimeout(timer2);
         if (restRes2.ok) success = true;
       } catch {}
     }
@@ -94,12 +109,12 @@ class FirebaseSyncService {
     if (!email) return null;
     const sanitizedEmail = email.toLowerCase().trim().replace(/[^a-zA-Z0-9]/g, '_');
 
-    // 1. Try Firebase Realtime DB SDK
+    // 1. Try Firebase Realtime DB SDK with 1.5s timeout
     if (this.db) {
       try {
         const userRef = ref(this.db, `users/${sanitizedEmail}`);
-        const snapshot = await get(userRef);
-        if (snapshot.exists()) {
+        const snapshot: any = await this.withTimeout(get(userRef), 1500);
+        if (snapshot && snapshot.exists()) {
           return snapshot.val();
         }
       } catch (e) {
@@ -109,14 +124,24 @@ class FirebaseSyncService {
 
     // 2. Direct REST API Fallback (Fast REST lookup for cross-device login!)
     try {
-      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
+      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
       if (restRes.ok) {
         const data = await restRes.json();
         if (data && data.email) return data;
       }
     } catch {
       try {
-        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`);
+        const controller2 = new AbortController();
+        const timer2 = setTimeout(() => controller2.abort(), 2000);
+        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
+          signal: controller2.signal,
+        });
+        clearTimeout(timer2);
         if (restRes2.ok) {
           const data2 = await restRes2.json();
           if (data2 && data2.email) return data2;

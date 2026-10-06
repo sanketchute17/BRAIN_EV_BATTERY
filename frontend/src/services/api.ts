@@ -477,7 +477,10 @@ export const apiService = {
     }
 
     // 4. Save cloud user profile to Firebase Realtime Database for cross-device access!
-    await firebaseSyncService.saveCloudUserProfile(newUserRecord).catch((e) => {
+    await Promise.race([
+      firebaseSyncService.saveCloudUserProfile(newUserRecord),
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]).catch((e) => {
       console.warn('Cloud DB profile save notice:', e);
     });
 

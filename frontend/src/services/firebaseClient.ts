@@ -6,6 +6,7 @@ import type { Auth } from 'firebase/auth';
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyB2UDBrT7lSqz5q3ptc18LyWWyaon5J8Cc',
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'brain-70dcd.firebaseapp.com',
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || 'https://brain-70dcd-default-rtdb.firebaseio.com',
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'brain-70dcd',
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'brain-70dcd.firebasestorage.app',
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '867406451657',
