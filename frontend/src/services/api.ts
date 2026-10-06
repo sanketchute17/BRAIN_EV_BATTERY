@@ -419,21 +419,23 @@ export const apiService = {
    */
   async register(payload: UserRegisterPayload): Promise<{ success: boolean; email: string }> {
     const emailKey = payload.email.toLowerCase().trim();
+    const cleanPassword = (payload.password || '').trim();
 
-    // 1. Check if email is already registered in local storage
-    const localUsers = getLocalUsersDB();
-    if (localUsers[emailKey]) {
-      throw new Error('Email address is already registered. Please sign in instead.');
+    if (!emailKey || !cleanPassword) {
+      throw new Error('Please provide a valid email address and password.');
+    }
+    if (cleanPassword.length < 6) {
+      throw new Error('Password must be at least 6 characters long.');
     }
 
-    // 2. Build full user record object
+    // 1. Build full user record object
     const newUserRecord = {
       id: `usr_${Date.now()}`,
-      fullName: payload.fullName,
-      full_name: payload.fullName,
+      fullName: payload.fullName?.trim() || 'EV Operator',
+      full_name: payload.fullName?.trim() || 'EV Operator',
       email: emailKey,
-      mobile: payload.mobile || '',
-      password: payload.password,
+      mobile: payload.mobile?.trim() || '',
+      password: cleanPassword,
       role: payload.role || 'EV Rider / Owner',
       evModel: payload.evModel || 'Ather 450X',
       ev_model: payload.evModel || 'Ather 450X',
@@ -442,32 +444,44 @@ export const apiService = {
       created_at: new Date().toISOString(),
     };
 
-    // 3. Save to Local Persistence DB
+    // 2. Save to Local Persistence DB (Always save to local storage)
     saveLocalUserDB(emailKey, newUserRecord);
     try {
       localStorage.setItem(`brain_profile_${emailKey}`, JSON.stringify(newUserRecord));
     } catch (e) {}
 
-    // 4. Register in Firebase Cloud Auth
+    // 3. Register or Re-Authenticate in Firebase Cloud Auth
     if (isFirebaseConfigured() && firebaseAuth) {
       try {
-        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, emailKey, payload.password || '');
+        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
         const fbUser = userCredential.user;
-        await updateProfile(fbUser, { displayName: payload.fullName });
+        await updateProfile(fbUser, { displayName: newUserRecord.fullName }).catch(() => {});
       } catch (fbErr: any) {
         if (fbErr.code === 'auth/email-already-in-use') {
-          throw new Error('Email address is already registered. Please sign in instead.');
+          // If already registered in Firebase Auth, attempt sign in so user session is active for DB sync
+          try {
+            await signInWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
+          } catch (signInErr: any) {
+            if (signInErr.code === 'auth/wrong-password' || signInErr.code === 'auth/invalid-credential') {
+              throw new Error('This email is already registered with a different password. Please sign in or use a different password.');
+            }
+          }
         } else if (fbErr.code === 'auth/weak-password') {
           throw new Error('Password should be at least 6 characters long.');
+        } else if (fbErr.code === 'auth/invalid-email') {
+          throw new Error('Invalid email address format. Please check your email.');
+        } else {
+          console.warn('Firebase Auth registration notice:', fbErr);
         }
-        console.warn('Firebase Auth registration notice:', fbErr);
       }
     }
 
-    // 5. Save cloud user profile to Firebase Realtime Database for cross-device access!
-    await firebaseSyncService.saveCloudUserProfile(newUserRecord).catch(() => {});
+    // 4. Save cloud user profile to Firebase Realtime Database for cross-device access!
+    await firebaseSyncService.saveCloudUserProfile(newUserRecord).catch((e) => {
+      console.warn('Cloud DB profile save notice:', e);
+    });
 
-    // Sign out from Firebase Auth so user signs in cleanly from Login screen
+    // 5. Sign out from Firebase Auth so user signs in cleanly from Login screen
     if (isFirebaseConfigured() && firebaseAuth && firebaseAuth.currentUser) {
       await firebaseAuth.signOut().catch(() => {});
     }
@@ -478,12 +492,12 @@ export const apiService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         email: emailKey,
-        password: payload.password || '',
-        fullName: payload.fullName,
-        mobile: payload.mobile || '',
-        role: payload.role || 'EV Rider / Owner',
-        evModel: payload.evModel || 'Ather 450X',
-        batteryChemistry: payload.batteryChemistry || 'NMC',
+        password: cleanPassword,
+        fullName: newUserRecord.fullName,
+        mobile: newUserRecord.mobile,
+        role: newUserRecord.role,
+        evModel: newUserRecord.evModel,
+        batteryChemistry: newUserRecord.batteryChemistry,
       }),
     }).catch(() => {});
 
