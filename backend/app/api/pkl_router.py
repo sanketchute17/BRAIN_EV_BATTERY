@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from pydantic import BaseModel
 import os
 import shutil
 from app.services.pkl_simulation_engine import pkl_engine
@@ -6,10 +7,18 @@ from app.core.config import settings
 
 router = APIRouter(prefix="/pkl", tags=["PKL Simulation & Models"])
 
+class BatteryPredictionRequest(BaseModel):
+    telemetry: dict
+
 @router.get("/summary")
 def get_pkl_summary():
     """Returns summary of all loaded .pkl simulation datasets and ML models."""
     return pkl_engine.get_summary()
+
+@router.post("/predict")
+def predict_battery(request: BatteryPredictionRequest):
+    """Predict from current battery telemetry with the registered battery intelligence model."""
+    return pkl_engine.predict_battery_telemetry(request.telemetry)
 
 @router.post("/upload")
 async def upload_pkl_file(file: UploadFile = File(...)):

@@ -1,7 +1,23 @@
-import { firebaseApp } from './firebaseClient';
+import { firebaseApp, firebaseAuth, isFirebaseConfigured } from './firebaseClient';
 import { getDatabase, ref, set, push, onValue, off, serverTimestamp, get } from 'firebase/database';
 import type { NormalizedBatteryState } from '../types/telemetry';
 import { PinnEngine, type PinnRiskAnalysis } from './pinnEngine';
+
+const getCustomDatabaseUrl = (): string | null => {
+  const rawUrl = (import.meta.env?.VITE_FIREBASE_DATABASE_URL || '').trim();
+  if (!rawUrl || rawUrl.includes('your-firebase-database-url')) return null;
+  if (rawUrl.includes('brain-70dcd-default-rtdb.firebaseio.com')) return null;
+
+  try {
+    const parsed = new URL(rawUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const isFirebaseDatabaseHost = hostname.includes('firebaseio.com') || hostname.includes('firebasedatabase.app');
+    if (!isFirebaseDatabaseHost) return null;
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+};
 
 export interface SyncedBatteryRecord {
   batteryId: string;
@@ -16,6 +32,7 @@ class FirebaseSyncService {
   private db: any = null;
   private isConnected: boolean = false;
   private activeListeners: Map<string, any> = new Map();
+  private disabledRestUrls: Set<string> = new Set();
 
   constructor() {
     this.initDatabase();
@@ -30,12 +47,15 @@ class FirebaseSyncService {
 
   private initDatabase() {
     try {
-      if (firebaseApp) {
-        this.db = getDatabase(firebaseApp, 'https://brain-70dcd-default-rtdb.firebaseio.com');
+      if (isFirebaseConfigured() && firebaseApp) {
+        this.db = getDatabase(firebaseApp);
         this.isConnected = true;
+      } else {
+        this.db = null;
+        this.isConnected = false;
       }
     } catch (e) {
-      console.warn('Firebase Realtime DB fallback:', e);
+      this.db = null;
       this.isConnected = false;
     }
   }
@@ -83,35 +103,25 @@ class FirebaseSyncService {
     }
 
     // 2. Direct REST API Fallback (Guarantees write from Android APK or any browser!)
-    try {
-      let tokenParam = '';
-      if (firebaseAuth?.currentUser) {
-        const idToken = await firebaseAuth.currentUser.getIdToken().catch(() => '');
-        if (idToken) tokenParam = `?auth=${idToken}`;
-      }
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2500);
-      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json${tokenParam}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userPayload),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (restRes.ok) success = true;
-    } catch {
+    const customUrl = getCustomDatabaseUrl();
+    if (isFirebaseConfigured() && customUrl) {
       try {
-        const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 2500);
-        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
+        let tokenParam = '';
+        if (firebaseAuth?.currentUser) {
+          const idToken = await firebaseAuth.currentUser.getIdToken().catch(() => '');
+          if (idToken) tokenParam = `?auth=${idToken}`;
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2500);
+        const restRes = await fetch(`${customUrl}/users/${sanitizedEmail}.json${tokenParam}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(userPayload),
-          signal: controller2.signal,
+          signal: controller.signal,
         });
-        clearTimeout(timer2);
-        if (restRes2.ok) success = true;
+        clearTimeout(timer);
+        if (restRes.ok) success = true;
       } catch {}
     }
 
@@ -168,31 +178,19 @@ class FirebaseSyncService {
     }
 
     // 2. Direct REST API Fallback (Fast REST lookup for cross-device login!)
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2500);
-      const restRes = await fetch(`https://brain-70dcd-default-rtdb.firebaseio.com/users/${sanitizedEmail}.json${tokenParam}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (restRes.ok) {
-        const data = await restRes.json();
-        if (data && (data.email || data.full_name || data.mobile)) {
-          return normalizeUser(data);
-        }
-      }
-    } catch {
+    const customUrlGet = getCustomDatabaseUrl();
+    if (isFirebaseConfigured() && customUrlGet) {
       try {
-        const controller2 = new AbortController();
-        const timer2 = setTimeout(() => controller2.abort(), 2500);
-        const restRes2 = await fetch(`https://brain-70dcd.firebaseio.com/users/${sanitizedEmail}.json`, {
-          signal: controller2.signal,
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2500);
+        const restRes = await fetch(`${customUrlGet}/users/${sanitizedEmail}.json${tokenParam}`, {
+          signal: controller.signal,
         });
-        clearTimeout(timer2);
-        if (restRes2.ok) {
-          const data2 = await restRes2.json();
-          if (data2 && (data2.email || data2.full_name || data2.mobile)) {
-            return normalizeUser(data2);
+        clearTimeout(timer);
+        if (restRes.ok) {
+          const data = await restRes.json();
+          if (data && (data.email || data.full_name || data.mobile)) {
+            return normalizeUser(data);
           }
         }
       } catch {}
@@ -229,34 +227,128 @@ class FirebaseSyncService {
       // Ignore quota error
     }
 
-    if (!this.db) return false;
+    let success = false;
 
-    try {
-      // 1. Update Live Node in Firebase: /batteries/{batteryId}/live_telemetry
-      const liveRef = ref(this.db, `batteries/${batteryId}`);
-      await set(liveRef, {
-        ...record,
-        updatedTimestamp: serverTimestamp(),
-      });
-
-      // 2. Append to History Node (throttled): /batteries/{batteryId}/history
-      const historyRef = ref(this.db, `batteries/${batteryId}/history`);
-      await push(historyRef, {
-        timestamp: record.lastUpdated,
-        voltage: state.voltage,
-        current: state.current,
-        temperature: state.temperature,
-        soc: state.soc,
-        soh: state.soh,
-        thermalRunawayRiskPct: pinnAnalysis.thermalRunawayRiskPct,
-        overallRiskLevel: pinnAnalysis.overallRiskLevel,
-      });
-
-      return true;
-    } catch (err) {
-      console.warn('Firebase DB sync write error (using offline buffer):', err);
-      return false;
+    // 1. Try Firebase Web SDK Write
+    if (this.db) {
+      try {
+        const liveRef = ref(this.db, `batteries/${batteryId}`);
+        await this.withTimeout(set(liveRef, record), 1500);
+        success = true;
+      } catch (e) {
+        // SDK write warning
+      }
     }
+
+    const customUrl = getCustomDatabaseUrl();
+    const restUrls = isFirebaseConfigured() && customUrl
+      ? [`${customUrl}/batteries/${batteryId}.json`]
+      : [];
+
+    for (const url of restUrls) {
+      if (this.disabledRestUrls.has(url)) continue;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 1500);
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(record),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+          success = true;
+          break;
+        } else {
+          this.disabledRestUrls.add(url);
+        }
+      } catch (e) {
+        this.disabledRestUrls.add(url);
+      }
+    }
+
+    return success;
+  }
+
+  /**
+   * Subscribe to Live Battery Cloud Stream for cross-device connection (e.g. Mobile phone connecting to Laptop battery broadcaster)
+   */
+  public subscribeToLiveBatteryStream(
+    batteryId: string,
+    callback: (record: SyncedBatteryRecord | null) => void
+  ): () => void {
+    const sanitizedId = (batteryId || 'BATTERY_PACK_01').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    if (this.db) {
+      try {
+        const liveRef = ref(this.db, `batteries/${sanitizedId}`);
+        const listener = onValue(
+          liveRef,
+          (snapshot) => {
+            if (snapshot.exists()) {
+              const val = snapshot.val();
+              callback(val);
+            }
+          },
+          (err) => {
+            console.warn('Firebase live stream listener warning:', err);
+          }
+        );
+        return () => {
+          off(liveRef, 'value', listener);
+        };
+      } catch (e) {}
+    }
+
+    // REST API fallback for instant cross-device mobile-to-laptop connectivity
+    let active = true;
+    const poll = async () => {
+      if (!active) return;
+      // First check local storage stream for instant local / port-forwarded cross-tab sync
+      try {
+        const rawLocal = localStorage.getItem(`brain_firebase_sync_${sanitizedId}`);
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal);
+          if (parsed && parsed.telemetry) {
+            callback(parsed);
+          }
+        }
+      } catch (e) {}
+
+      const customUrl = getCustomDatabaseUrl();
+      const urls = isFirebaseConfigured() && customUrl
+        ? [`${customUrl}/batteries/${sanitizedId}.json`]
+        : [];
+
+      for (const url of urls) {
+        if (this.disabledRestUrls.has(url)) continue;
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 1500);
+          const res = await fetch(url, { signal: controller.signal });
+          clearTimeout(timer);
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.telemetry) {
+              callback(data);
+              break;
+            }
+          } else {
+            this.disabledRestUrls.add(url);
+          }
+        } catch {
+          this.disabledRestUrls.add(url);
+        }
+      }
+    };
+    poll();
+    const intervalId = setInterval(poll, 1200);
+
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
   }
 
   /**

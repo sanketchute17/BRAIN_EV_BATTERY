@@ -1,11 +1,11 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional, List, Any
 from datetime import datetime
 
 # Auth Schemas
 class UserRegister(BaseModel):
     fullName: str
-    email: EmailStr
+    email: str
     mobile: Optional[str] = None
     password: str
     role: Optional[str] = "EV Rider / Owner"
@@ -13,7 +13,7 @@ class UserRegister(BaseModel):
     batteryChemistry: Optional[str] = "NMC"
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 class Token(BaseModel):

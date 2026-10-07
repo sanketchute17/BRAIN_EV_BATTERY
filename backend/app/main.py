@@ -37,6 +37,9 @@ def seed_database():
 seed_database()
 
 
+from app.api import auth, pkl_router, bms_bluetooth, battery_router
+from app.services.twin_service import twin_service
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
@@ -53,16 +56,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def get_lan_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+@app.on_event("startup")
+async def on_startup():
+    twin_service.start()
+    lan_ip = get_lan_ip()
+    port = int(os.environ.get("PORT", 8000))
+    print("\n" + "=" * 68)
+    print("[SERVER] BRAIN EV Digital Twin Telemetry & Virtual BMS Active!")
+    print(f"[SERVER] Local PC Access:  http://localhost:{port}")
+    print(f"[SERVER] Mobile Wi-Fi IP:  http://{lan_ip}:{port}")
+    print(f"[SERVER] WebSocket Stream: ws://{lan_ip}:{port}/ws/telemetry")
+    print("=" * 68 + "\n")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    twin_service.stop()
+    print("[TWIN SERVICE] Stopped Digital Twin simulation loop")
+
 # Include API Routers
+app.include_router(battery_router.router)
+app.include_router(battery_router.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(pkl_router.router, prefix=settings.API_V1_STR)
 app.include_router(bms_bluetooth.router, prefix=settings.API_V1_STR)
 
 @app.get("/")
-@app.get("/health")
 def root():
     return {
-        "status": "ONLINE",
+        "status": "ok",
         "system": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "docs": f"{settings.API_V1_STR}/docs"

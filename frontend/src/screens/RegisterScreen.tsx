@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { ArrowLeft, ArrowRight, User, Mail, Lock, Phone, ShieldCheck, Cpu, Edit3, CheckCircle2, Zap } from 'lucide-react';
+import { ArrowLeft, ArrowRight, User, Mail, Lock, Phone, ShieldCheck, Cpu, Edit3, CheckCircle2, Zap, QrCode, Smartphone, Check } from 'lucide-react';
 import { apiService } from '../services/api';
+import { bluetoothService } from '../services/bluetoothService';
+import RealCameraQrScanner from '../components/RealCameraQrScanner';
 import scooterBg from '../assets/scooter_bg.jpg';
 
 interface RegisterScreenProps {
@@ -33,6 +35,25 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
   const [chemistrySelect, setChemistrySelect] = useState('NMC (Nickel Manganese Cobalt)');
   const [customChemistry, setCustomChemistry] = useState('');
   const [isCustomChemistry, setIsCustomChemistry] = useState(false);
+
+  // QR Pairing State
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [isQrPaired, setIsQrPaired] = useState(false);
+  const [pairedBatteryId, setPairedBatteryId] = useState('');
+
+  const handleScanSuccess = (batteryId: string) => {
+    const finalId = batteryId.trim() || 'BATTERY_PACK_01';
+    bluetoothService.connectToCloudLaptopBatteryStream(finalId);
+    bluetoothService.saveRecentDevice({
+      id: finalId,
+      name: `Digital Twin Battery (${finalId})`,
+      type: 'QR Camera Paired Stream',
+    });
+    setIsQrPaired(true);
+    setPairedBatteryId(finalId);
+    setShowQrModal(false);
+    setSuccessMsg(`✅ Digital Twin QR Camera Paired (${finalId})! Status: CONNECTED`);
+  };
 
   const handleEvSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
@@ -137,6 +158,40 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
               <span>{successMsg}</span>
             </div>
           )}
+
+          {/* DIGITAL TWIN QR CODE PAIRING BANNER */}
+          <div className="p-3 bg-gradient-to-r from-slate-900 to-emerald-950 rounded-2xl border border-emerald-500/40 text-white space-y-1.5 shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-black text-emerald-400">
+                <QrCode className="w-4 h-4" />
+                <span>Pair Digital Twin Battery</span>
+              </div>
+              <span className={`text-[8px] font-black px-2 py-0.5 rounded-full uppercase ${isQrPaired ? 'bg-emerald-500 text-slate-950' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'}`}>
+                {isQrPaired ? 'PAIRED' : 'SCAN QR'}
+              </span>
+            </div>
+
+            {isQrPaired ? (
+              <div className="text-[10px] font-bold text-emerald-300 flex items-center gap-1.5 bg-emerald-900/50 p-2 rounded-xl border border-emerald-500/30">
+                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Battery Paired: <strong className="font-mono text-white">{pairedBatteryId}</strong></span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <p className="text-[9px] font-semibold text-slate-300 leading-tight">
+                  Scan QR from Digital Twin simulation screen to auto-connect battery.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowQrModal(true)}
+                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[10px] rounded-xl transition cursor-pointer active:scale-95 shrink-0 uppercase tracking-wider flex items-center gap-1"
+                >
+                  <QrCode className="w-3 h-3" />
+                  <span>Scan QR</span>
+                </button>
+              </div>
+            )}
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-2.5">
 
@@ -352,6 +407,14 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({
             Sign In
           </button>
         </div>
+
+        {/* REAL CAMERA QR SCANNER MODAL */}
+        <RealCameraQrScanner
+          isOpen={showQrModal}
+          onClose={() => setShowQrModal(false)}
+          onScanSuccess={handleScanSuccess}
+          defaultBatteryId="BATTERY_PACK_01"
+        />
       </div>
     </div>
   );

@@ -275,6 +275,78 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </span>
           </div>
 
+          {/* 4. QUICK DEMO LOGIN ACCOUNTS PICKER */}
+          <div className="space-y-1.5 my-2">
+            <div className="flex items-center justify-between text-[10px] font-black uppercase text-slate-300 tracking-wider px-1">
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                QUICK DEMO ACCOUNTS (1-CLICK)
+              </span>
+              <span className="text-[9px] font-mono text-emerald-400/80 bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                Ready to Sign In
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail('rider@brainev.com');
+                  setPassword('password123');
+                  setIsCaptchaVerified(true);
+                  setErrorMsg('');
+                }}
+                className={`p-2 rounded-2xl border text-left transition cursor-pointer backdrop-blur-md ${
+                  email === 'rider@brainev.com'
+                    ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm'
+                    : 'bg-white/10 hover:bg-white/20 border-white/20 text-slate-200'
+                }`}
+              >
+                <div className="text-[10px] font-black truncate text-emerald-400">Rohit More</div>
+                <div className="text-[8px] font-bold text-slate-300 truncate">Ather 450X</div>
+                <div className="text-[7px] font-mono text-slate-400 truncate mt-0.5">rider@brainev.com</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail('ola.rider@brainev.com');
+                  setPassword('password123');
+                  setIsCaptchaVerified(true);
+                  setErrorMsg('');
+                }}
+                className={`p-2 rounded-2xl border text-left transition cursor-pointer backdrop-blur-md ${
+                  email === 'ola.rider@brainev.com'
+                    ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm'
+                    : 'bg-white/10 hover:bg-white/20 border-white/20 text-slate-200'
+                }`}
+              >
+                <div className="text-[10px] font-black truncate text-emerald-400">Ananya S.</div>
+                <div className="text-[8px] font-bold text-slate-300 truncate">Ola S1 Pro</div>
+                <div className="text-[7px] font-mono text-slate-400 truncate mt-0.5">ola.rider@...</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail('admin@brainev.com');
+                  setPassword('admin123');
+                  setIsCaptchaVerified(true);
+                  setErrorMsg('');
+                }}
+                className={`p-2 rounded-2xl border text-left transition cursor-pointer backdrop-blur-md ${
+                  email === 'admin@brainev.com'
+                    ? 'bg-emerald-500/20 border-emerald-400 text-white shadow-sm'
+                    : 'bg-white/10 hover:bg-white/20 border-white/20 text-slate-200'
+                }`}
+              >
+                <div className="text-[10px] font-black truncate text-amber-400">Fleet Admin</div>
+                <div className="text-[8px] font-bold text-slate-300 truncate">TVS iQube</div>
+                <div className="text-[7px] font-mono text-slate-400 truncate mt-0.5">admin@brainev.com</div>
+              </button>
+            </div>
+          </div>
+
           {/* SECONDARY PILL BUTTONS FROM IMAGE 2 */}
           <div className="grid grid-cols-2 gap-3">
             <button
@@ -283,7 +355,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               className="py-3.5 px-3 bg-white/75 hover:bg-white/90 text-emerald-700 border border-white/80 rounded-full text-xs font-black transition-all duration-200 flex items-center justify-center gap-2 shadow-md backdrop-blur-md cursor-pointer active:scale-95"
             >
               <PlayCircle className="w-4 h-4 text-emerald-600" />
-              <span>Demo Mode</span>
+              <span>Guest Demo</span>
             </button>
             <button
               type="button"
