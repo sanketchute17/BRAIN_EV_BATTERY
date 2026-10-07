@@ -1,6 +1,9 @@
 {
   "name": "brain-ev-battery-root",
   "private": true,
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
     "build": "cd frontend && npm install && npm run build"
   }
