@@ -36,12 +36,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [fullName, setFullName] = useState(isDemoMode ? '' : (currentUser?.full_name || currentUser?.fullName || ''));
-  const [mobile, setMobile] = useState(isDemoMode ? '' : (currentUser?.mobile || currentUser?.mobileNumber || ''));
-  const [role, setRole] = useState(isDemoMode ? '' : (currentUser?.role || 'EV Rider / Owner'));
-  const [evModel, setEvModel] = useState(isDemoMode ? '' : (currentUser?.ev_model || currentUser?.evModel || ''));
-  const [batteryChemistry, setBatteryChemistry] = useState(isDemoMode ? '' : (currentUser?.battery_chemistry || currentUser?.batteryChemistry || ''));
-  
+  const [fullName, setFullName] = useState(currentUser?.full_name || currentUser?.fullName || '');
+  const [mobile, setMobile] = useState(currentUser?.mobile || currentUser?.mobileNumber || currentUser?.phone || '');
+  const [role, setRole] = useState(currentUser?.role || 'EV Rider / Owner');
+  const [evModel, setEvModel] = useState(currentUser?.ev_model || currentUser?.evModel || '');
+  const [batteryChemistry, setBatteryChemistry] = useState(currentUser?.battery_chemistry || currentUser?.batteryChemistry || '');
+  const [avatarPhoto, setAvatarPhoto] = useState<string>(currentUser?.avatar_photo || '');
+
   const getPackArchitecture = (modelStr: string) => {
     const m = (modelStr || '').toLowerCase();
     if (m.includes('ola')) {
@@ -57,9 +58,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
     return '51.2V Nominal • 14S-16S EV Pack Architecture';
   };
-  
-  // Avatar Photo state (Base64 URL or empty)
-  const [avatarPhoto, setAvatarPhoto] = useState<string>(isDemoMode ? '' : (currentUser?.avatar_photo || ''));
+
+  // Keep form inputs updated when currentUser prop finishes loading or updates
+  React.useEffect(() => {
+    if (currentUser) {
+      setFullName(currentUser.full_name || currentUser.fullName || '');
+      setMobile(currentUser.mobile || currentUser.mobileNumber || currentUser.phone || '');
+      setRole(currentUser.role || 'EV Rider / Owner');
+      setEvModel(currentUser.ev_model || currentUser.evModel || '');
+      setBatteryChemistry(currentUser.battery_chemistry || currentUser.batteryChemistry || '');
+      if (currentUser.avatar_photo) {
+        setAvatarPhoto(currentUser.avatar_photo);
+      }
+    }
+  }, [currentUser]);
 
   // Password reset state
   const [currentPassword, setCurrentPassword] = useState('');

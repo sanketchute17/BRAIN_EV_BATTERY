@@ -1,7 +1,9 @@
-import { firebaseApp } from './firebaseClient';
+import { firebaseApp, firebaseAuth } from './firebaseClient';
+import { updateProfile } from 'firebase/auth';
 import { getDatabase, ref, set, push, onValue, off, serverTimestamp, get } from 'firebase/database';
 import type { NormalizedBatteryState } from '../types/telemetry';
 import { PinnEngine, type PinnRiskAnalysis } from './pinnEngine';
+import { encodeFirebaseProfilePhotoUrl, decodeFirebaseProfilePhotoUrl } from './api';
 
 export interface SyncedBatteryRecord {
   batteryId: string;
@@ -70,6 +72,18 @@ class FirebaseSyncService {
     };
 
     let success = false;
+
+    // 0. Save profile metadata directly to Firebase Auth profile if currentUser is active
+    if (firebaseAuth?.currentUser && firebaseAuth.currentUser.email?.toLowerCase().trim() === emailKey) {
+      try {
+        const photoMetaStr = encodeFirebaseProfilePhotoUrl(userPayload);
+        await updateProfile(firebaseAuth.currentUser, {
+          displayName: fn,
+          photoURL: photoMetaStr,
+        }).catch(() => {});
+        success = true;
+      } catch (e) {}
+    }
 
     // 1. Try Firebase Realtime DB SDK with 2.5s timeout
     if (this.db) {
@@ -153,6 +167,23 @@ class FirebaseSyncService {
         batteryChemistry: chem,
       };
     };
+
+    // 0. Check Firebase Auth currentUser metadata first if available
+    if (firebaseAuth?.currentUser && firebaseAuth.currentUser.email?.toLowerCase().trim() === emailKey) {
+      const fbDecoded = decodeFirebaseProfilePhotoUrl(firebaseAuth.currentUser.photoURL);
+      if (fbDecoded || firebaseAuth.currentUser.displayName) {
+        return normalizeUser({
+          id: firebaseAuth.currentUser.uid,
+          email: emailKey,
+          full_name: firebaseAuth.currentUser.displayName || 'EV Operator',
+          fullName: firebaseAuth.currentUser.displayName || 'EV Operator',
+          mobile: fbDecoded?.mobile || '',
+          role: fbDecoded?.role || 'EV Rider / Owner',
+          ev_model: fbDecoded?.ev_model || 'Ather 450X',
+          battery_chemistry: fbDecoded?.battery_chemistry || 'NMC',
+        });
+      }
+    }
 
     // 1. Try Firebase Realtime DB SDK with 2.5s timeout
     if (this.db) {
