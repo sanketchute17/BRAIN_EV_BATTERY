@@ -1023,8 +1023,6 @@ export function App() {
 
               </div>
             )}
-              </div>
-            )}
 
             {/* TAB 2: BATTERY INTELLIGENCE & CELL MONITORING */}
             {activeTab === 'battery' && (
