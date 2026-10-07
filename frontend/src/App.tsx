@@ -14,6 +14,7 @@ import { batteryStateService } from './services/batteryStateService';
 import type { NormalizedBatteryState } from './types/telemetry';
 import { bluetoothService } from './services/bluetoothService';
 import type { BLEDeviceState } from './services/bluetoothService';
+import { telemetrySocketService } from './services/telemetrySocket';
 import { apiService } from './services/api';
 import { DoctorDrawer } from './components/drawers/DoctorDrawer';
 import { AssistantDrawer } from './components/drawers/AssistantDrawer';
@@ -118,16 +119,13 @@ export function App() {
     lastScrollTop.current = currentScrollTop;
   };
 
-  // Status Switcher: HEALTHY, WATCH, WARNING, CRITICAL
-  const [demoStatus, setDemoStatus] = useState<'HEALTHY' | 'WATCH' | 'WARNING' | 'CRITICAL'>('HEALTHY');
-
   // Selected Cell Modal State
   const [selectedCell, setSelectedCell] = useState<{
     id: number;
     voltage: number;
     temp: number;
     deviation: number;
-    status: 'HEALTHY' | 'WARNING' | 'CRITICAL';
+    status: 'HEALTHY' | 'WATCH' | 'WARNING' | 'CRITICAL';
     riskScore: number;
   } | null>(null);
 
@@ -174,7 +172,8 @@ export function App() {
     checkBackend();
     const interval = setInterval(checkBackend, 15000);
 
-    // Initial state is DISCONNECTED by default until user connects BLE
+    // Initial state is DISCONNECTED by default until user explicitly connects BLE / QR
+    bluetoothService.disconnect(false);
 
     // Subscribe to live BLE telemetry updates
     const unsubscribeBle = bluetoothService.subscribe(() => {
@@ -186,10 +185,34 @@ export function App() {
       firebaseSyncService.syncTelemetryToFirebase(state);
     });
 
+    const unsubscribeTwinTelemetry = telemetrySocketService.subscribe((packet) => {
+      if (packet.transport === 'LAN_BLUETOOTH_BRIDGE') {
+        bluetoothService.markLanBridgeConnected();
+      } else {
+        bluetoothService.markLanBridgeDisconnected();
+      }
+    });
+
+    // ── QR Deep-Link Auto-Pairing ──
+    // When the app is opened via a QR code link (e.g. ?pair=BATTERY_PACK_01&mode=mobile),
+    // auto-open the Bluetooth Pairing modal so the user can instantly connect.
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const pairBatteryId = urlParams.get('pair');
+      const mode = urlParams.get('mode');
+      if (pairBatteryId && mode === 'mobile') {
+        // Short delay so the app renders first
+        setTimeout(() => {
+          setIsPairingModalOpen(true);
+        }, 800);
+      }
+    } catch (e) {}
+
     return () => {
       clearInterval(interval);
       unsubscribeBle();
       unsubscribeBattery();
+      unsubscribeTwinTelemetry();
     };
   }, []);
 
@@ -332,22 +355,10 @@ export function App() {
     );
   }
 
-  // Status Light Indicator Style (Emerald Green / Electric Red)
-  const getStatusLightClass = (st: typeof demoStatus) => {
-    switch (st) {
-      case 'HEALTHY':
-      case 'WATCH':
-        return 'bg-emerald-500 status-pulse-green shadow-emerald';
-      case 'WARNING':
-      case 'CRITICAL':
-        return 'bg-red-500 status-pulse-red shadow-red';
-    }
-  };
-
   return (
     <div className="min-h-screen min-h-[100dvh] bg-slate-950 flex items-center justify-center p-0 sm:p-4 selection:bg-emerald-500/20 relative overflow-x-hidden touch-scroll-active">
-      {/* ANDROID MODERN SMARTPHONE CONTAINER FRAME (Width: 360px, Height: 800px, 9:20 Aspect Ratio) */}
-      <div className="w-full sm:w-[360px] min-h-screen sm:min-h-[800px] sm:h-[800px] sm:max-h-[800px] sm:rounded-[42px] relative overflow-y-auto sm:overflow-hidden shadow-[0_25px_60px_-15px_rgba(0,0,0,0.8)] border-0 sm:border-[8px] sm:border-slate-900 bg-slate-50 text-slate-900 flex flex-col justify-between z-10 shrink-0 pb-16 sm:pb-0 touch-scroll-active">
+      {/* Responsive dashboard shell; it retains a compact phone layout on small screens. */}
+      <div className="w-full max-w-[1440px] min-h-[100dvh] h-[100dvh] sm:min-h-0 sm:h-[calc(100dvh-2rem)] sm:max-h-[960px] sm:rounded-[28px] relative overflow-y-auto sm:overflow-hidden shadow-[0_25px_60px_-15px_rgba(0,0,0,0.25)] border-0 sm:border sm:border-slate-200 bg-slate-50 text-slate-900 flex flex-col justify-between z-10 shrink-0 pb-16 sm:pb-0 touch-scroll-active">
         
         {/* 1. CLEAN, UNCLUTTERED HEADER */}
         <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3.5 py-2 flex items-center justify-between shadow-2xs shrink-0 relative">
@@ -492,7 +503,7 @@ export function App() {
                   <div className="py-6 px-4 text-center text-slate-400 text-xs font-semibold flex flex-col items-center justify-center gap-1.5">
                     <CheckCircle2 className="w-5 h-5 text-emerald-500/80" />
                     <span>No active notifications</span>
-                    <span className="text-[10px] text-slate-400 font-normal">System is operating clean with zero unread alerts.</span>
+                    <span className="text-[10px] text-slate-400 font-normal">No unread notices. Live battery risk monitoring continues.</span>
                   </div>
                 )}
               </div>
@@ -520,6 +531,45 @@ export function App() {
 
         {/* 2. MAIN CONTENT BODY */}
         <main onScroll={handleMainScroll} className="relative z-10 p-3 sm:p-4 space-y-4 flex-1 overflow-y-auto min-h-0 pb-20 touch-scroll-active">
+
+          {/* LIVE BLUETOOTH CONNECTIVITY BAR */}
+          <div 
+            onClick={() => setIsPairingModalOpen(true)}
+            className={`p-2.5 px-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between shadow-xs ${
+              bleState.connected && batteryState.safetyState === 'CRITICAL'
+                ? 'bg-gradient-to-r from-slate-950 to-red-950 text-red-200 border-red-500/60 hover:bg-red-900/60'
+                : bleState.connected && batteryState.safetyState !== 'HEALTHY'
+                ? 'bg-gradient-to-r from-slate-900 to-amber-950 text-amber-200 border-amber-500/60 hover:bg-amber-900/60'
+                : bleState.connected
+                ? 'bg-gradient-to-r from-slate-900 to-emerald-950 text-emerald-300 border-emerald-500/50 hover:bg-emerald-900/60'
+                : 'bg-slate-900 text-slate-300 border-amber-500/40 hover:bg-slate-850'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`p-1.5 rounded-xl border ${bleState.connected && batteryState.safetyState === 'CRITICAL' ? 'bg-red-500/20 border-red-400 text-red-300' : bleState.connected && batteryState.safetyState !== 'HEALTHY' ? 'bg-amber-500/20 border-amber-400 text-amber-300' : bleState.connected ? 'bg-emerald-500/20 border-emerald-400 text-emerald-400' : 'bg-amber-500/20 border-amber-400 text-amber-400'}`}>
+                <Bluetooth className={`w-4 h-4 ${bleState.connected ? 'animate-pulse' : ''}`} />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wider">
+                  <span className={`w-2 h-2 rounded-full ${bleState.connected ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
+                  <span>{bleState.connected ? (bleState.mode === 'NETWORK_BRIDGE' ? 'CONNECTED VIA WI-FI · BLUETOOTH-STYLE LINK' : 'BLUETOOTH CONNECTED · LIVE GATT') : 'BLUETOOTH DISCONNECTED'}</span>
+                </div>
+                <div className="text-[11px] font-extrabold text-white truncate mt-0.5">
+                  {bleState.connected ? (
+                    <span>{bleState.deviceName || 'BRAIN Digital Twin Battery'} • {batteryState.voltage}V | {batteryState.temperature}°C | {batteryState.soc}% SOC</span>
+                  ) : (
+                    <span>Tap to connect to a battery or Digital Twin</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`text-[9px] font-black uppercase px-2.5 py-1 rounded-xl border ${bleState.connected ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'}`}>
+                {bleState.connected ? 'LIVE 5Hz' : 'CONNECT'}
+              </span>
+            </div>
+          </div>
           {isDemoMode && (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2 px-3 flex items-center justify-between text-[11px] font-bold text-amber-800 animate-fadeIn">
               <span>VIEW-ONLY DEMO MODE: Actions & saved data locked.</span>
@@ -577,7 +627,7 @@ export function App() {
                   </div>
                 </div>
 
-                <Battery3DView status={demoStatus} expanded={true} interactive={true} />
+                <Battery3DView status={batteryState.safetyState} isConnected={batteryState.connectionState === 'CONNECTED'} expanded={true} interactive={true} />
               </div>
             ) : activeDrawerItem === 'bms' ? (
               <div className="space-y-4 animate-fadeIn">
@@ -750,8 +800,8 @@ export function App() {
                 <div className="bg-white rounded-3xl p-3.5 border border-slate-200/80 shadow-2xs space-y-2.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="inline-flex items-center gap-1 bg-[#ECFDF5] border border-[#A7F3D0] px-2 py-0.5 rounded-full text-[9px] font-extrabold text-[#047857]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#059669] animate-pulse" /> Live
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold ${batteryState.connectionState !== 'CONNECTED' ? 'bg-slate-100 border border-slate-200 text-slate-500' : batteryState.safetyState === 'CRITICAL' ? 'bg-red-50 border border-red-200 text-red-700' : batteryState.safetyState !== 'HEALTHY' ? 'bg-amber-50 border border-amber-200 text-amber-700' : 'bg-[#ECFDF5] border border-[#A7F3D0] text-[#047857]'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${batteryState.connectionState !== 'CONNECTED' ? 'bg-slate-400' : batteryState.safetyState === 'CRITICAL' ? 'bg-red-500 animate-pulse' : batteryState.safetyState !== 'HEALTHY' ? 'bg-amber-500 animate-pulse' : 'bg-[#059669] animate-pulse'}`} /> {batteryState.connectionState === 'CONNECTED' ? batteryState.safetyState === 'HEALTHY' ? 'Live' : batteryState.safetyState : 'Standby'}
                       </span>
                       <div>
                         <h3 className="text-xs sm:text-sm font-black text-slate-900 tracking-tight">3D Digital Twin</h3>
@@ -770,9 +820,9 @@ export function App() {
 
                   {/* Interactive 3D WebGL Battery View Canvas */}
                   <div className="relative flex flex-col items-center justify-center">
-                    <div className="w-full h-36 sm:h-40 relative rounded-2xl overflow-hidden border border-slate-100 bg-[#F8FAFC]">
+                    <div className="w-full h-48 sm:h-64 lg:h-80 relative rounded-2xl overflow-hidden border border-slate-100 bg-[#F8FAFC]">
                       <ErrorBoundary>
-                        <Battery3DView status={demoStatus} interactive={true} hideControls={true} />
+                        <Battery3DView status={batteryState.safetyState} isConnected={batteryState.connectionState === 'CONNECTED'} interactive={true} hideControls={true} />
                       </ErrorBoundary>
                     </div>
 
@@ -781,8 +831,8 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* 4 KEY METRICS HORIZONTAL ROW */}
-                  <div className="grid grid-cols-4 gap-1.5 pt-1">
+                  {/* 4 KEY METRICS RESPONSIVE GRID */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                     <div className="bg-[#F8FAFC] p-2 rounded-2xl border border-slate-200/60 text-center">
                       <div className="flex items-center justify-center gap-1 text-[9px] font-extrabold text-slate-400 uppercase">
                         <Zap className="w-3 h-3 text-[#059669]" /> SOC
@@ -840,11 +890,17 @@ export function App() {
 
                     <span className={`inline-flex items-center gap-1 border px-2.5 py-0.5 rounded-full text-[9px] font-extrabold ${
                       batteryState.connectionState === 'CONNECTED'
-                        ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#047857]'
+                        ? (batteryState.safetyState === 'HEALTHY'
+                          ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#047857]'
+                          : batteryState.safetyState === 'CRITICAL'
+                          ? 'bg-red-50 border-red-200 text-red-700'
+                          : 'bg-amber-50 border-amber-200 text-amber-700')
                         : 'bg-slate-100 border-slate-300 text-slate-500'
                     }`}>
                       <span className={`w-1.5 h-1.5 rounded-full ${
-                        batteryState.connectionState === 'CONNECTED' ? 'bg-[#059669]' : 'bg-slate-400'
+                        batteryState.connectionState === 'CONNECTED'
+                          ? (batteryState.safetyState === 'HEALTHY' ? 'bg-[#059669]' : batteryState.safetyState === 'CRITICAL' ? 'bg-red-500 animate-ping' : 'bg-amber-500 animate-pulse')
+                          : 'bg-slate-400'
                       }`} />
                       {batteryState.connectionState === 'CONNECTED' ? batteryState.safetyState : 'STANDBY'}
                     </span>
@@ -881,7 +937,7 @@ export function App() {
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div
                       onClick={() => setActiveTab('battery')}
                       className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-1 cursor-pointer hover:border-emerald-300 transition"
@@ -921,40 +977,52 @@ export function App() {
                 </div>
 
                 {/* AI GUARDIAN & RISK STATUS 2 CARDS */}
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div 
-                    onClick={() => setActiveTab('guardian')}
-                    className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs flex items-center justify-between cursor-pointer hover:border-emerald-300 transition"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-xl bg-[#ECFDF5] text-[#059669]">
-                        <ShieldCheck className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-black text-slate-900">AI Guardian</div>
-                        <div className="text-[8px] font-semibold text-slate-400 leading-tight">No critical issues detected</div>
-                      </div>
+                {(() => {
+                  const connected = batteryState.connectionState === 'CONNECTED';
+                  const risk = connected ? PinnEngine.evaluatePhysicsModel(batteryState) : null;
+                  const level = risk?.overallRiskLevel || 'STANDBY';
+                  const levelStyle = level === 'CRITICAL'
+                    ? 'bg-red-50 border-red-200 text-red-700'
+                    : level === 'ELEVATED'
+                    ? 'bg-orange-50 border-orange-200 text-orange-700'
+                    : level === 'WATCH'
+                    ? 'bg-amber-50 border-amber-200 text-amber-700'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-700';
+                  const summary = !connected ? 'Waiting for live battery data' : level === 'CRITICAL' ? 'Critical condition reported' : level === 'ELEVATED' ? 'Battery needs attention' : level === 'WATCH' ? 'Monitor battery closely' : 'No abnormal signals detected';
+                  return (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        onClick={() => setActiveTab('guardian')}
+                        className={`min-w-0 text-left p-3 rounded-2xl border shadow-2xs flex items-center justify-between gap-2 cursor-pointer transition hover:shadow-sm ${levelStyle}`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="p-1.5 rounded-xl bg-white/80 shrink-0"><ShieldCheck className="w-4 h-4" /></div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-black text-slate-900">AI Guardian</div>
+                            <div className="text-[9px] font-semibold leading-tight truncate">{summary}</div>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                      </button>
+                      <button
+                        onClick={() => setActiveTab('guardian')}
+                        className={`min-w-0 text-left p-3 rounded-2xl border shadow-2xs flex items-center justify-between gap-2 cursor-pointer transition hover:shadow-sm ${levelStyle}`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="p-1.5 rounded-xl bg-white/80 shrink-0"><Clock className="w-4 h-4" /></div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-black text-slate-900">Risk Status</div>
+                            <div className="text-[10px] font-extrabold">{connected ? `${level} · ${risk?.thermalRunawayRiskPct}%` : 'STANDBY'}</div>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                      </button>
                     </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  </div>
+                  );
+                })()}
 
-                  <div 
-                    onClick={() => setActiveTab('guardian')}
-                    className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs flex items-center justify-between cursor-pointer hover:border-emerald-300 transition"
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-xl bg-[#ECFDF5] text-[#059669]">
-                        <Clock className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-black text-slate-900">Risk Status</div>
-                        <div className="text-[9px] font-extrabold text-[#059669]">Low Risk</div>
-                      </div>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  </div>
-                </div>
-
+              </div>
+            )}
               </div>
             )}
 
@@ -1027,7 +1095,8 @@ export function App() {
                     </h3>
                     <div className="flex items-center gap-3 text-[10px] sm:text-[11px] font-bold">
                       <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Healthy</span>
-                      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Warning/Critical</span>
+                      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Warning</span>
+                      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Critical</span>
                     </div>
                   </div>
 
@@ -1036,9 +1105,19 @@ export function App() {
                       batteryState.cells.map((c: any) => {
                         const cVoltage = c.voltage || 0;
                         const cTemp = c.temperature || 0;
-                        const isAbnormal = c.status !== 'HEALTHY' || cTemp > 44;
-                        const statusColor = isAbnormal
+                        const reportedRisk = c.risk || 0;
+                        const cellStatus = c.status && c.status !== 'HEALTHY'
+                          ? c.status
+                          : reportedRisk >= 75 || cTemp >= 55
+                          ? 'CRITICAL'
+                          : reportedRisk >= 35 || cTemp >= 45
+                          ? 'WARNING'
+                          : 'HEALTHY';
+                        const isAbnormal = cellStatus !== 'HEALTHY';
+                        const statusColor = cellStatus === 'CRITICAL'
                           ? 'bg-red-100 border-red-500 text-red-700 animate-pulse shadow-red'
+                          : isAbnormal
+                          ? 'bg-amber-50 border-amber-400 text-amber-800'
                           : 'bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100';
 
                         return (
@@ -1049,9 +1128,9 @@ export function App() {
                                 id: c.id,
                                 voltage: cVoltage,
                                 temp: cTemp,
-                                deviation: c.deviation || 0.01,
-                                status: isAbnormal ? 'CRITICAL' : 'HEALTHY',
-                                riskScore: isAbnormal ? 84 : 12,
+                                deviation: (c.deviation || 0) * 1000,
+                                status: cellStatus,
+                                riskScore: Math.round(reportedRisk || (cellStatus === 'CRITICAL' ? 85 : cellStatus === 'WARNING' ? 55 : 5)),
                               })
                             }
                             className={`h-12 rounded-xl border flex flex-col items-center justify-center font-mono text-xs font-bold transition-all cursor-pointer ${statusColor}`}
@@ -1096,7 +1175,7 @@ export function App() {
                         </div>
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <div className="text-[10px] font-bold text-slate-500">TEMPERATURE</div>
-                          <div className="text-xl font-extrabold text-red-500">{selectedCell.temp} °C</div>
+                          <div className={`text-xl font-extrabold ${selectedCell.status === 'CRITICAL' ? 'text-red-600' : selectedCell.status === 'HEALTHY' ? 'text-emerald-600' : 'text-amber-600'}`}>{selectedCell.temp} °C</div>
                         </div>
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <div className="text-[10px] font-bold text-slate-500">DEVIATION</div>
@@ -1104,7 +1183,7 @@ export function App() {
                         </div>
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <div className="text-[10px] font-bold text-slate-500">RISK SCORE</div>
-                          <div className="text-xl font-extrabold text-red-500">{selectedCell.riskScore}%</div>
+                          <div className={`text-xl font-extrabold ${selectedCell.riskScore >= 75 ? 'text-red-600' : selectedCell.riskScore >= 35 ? 'text-amber-600' : 'text-emerald-600'}`}>{selectedCell.riskScore}%</div>
                         </div>
                       </div>
 
@@ -1112,8 +1191,10 @@ export function App() {
                         <div className="text-[10px] font-bold text-slate-500 uppercase">AI CELL DIAGNOSIS</div>
                         <div className="text-xs font-semibold text-slate-800 mt-1">
                           {selectedCell.status === 'CRITICAL'
-                            ? 'Severe voltage drop and elevated thermal gradient detected. Cell balancing override active.'
-                            : 'Normal impedance and healthy electrochemical activity.'}
+                            ? 'The BMS marks this cell critical. Reduce load and inspect it before further operation.'
+                            : selectedCell.status === 'WARNING' || selectedCell.status === 'WATCH'
+                            ? `The BMS marks this cell ${selectedCell.status.toLowerCase()}. Monitor its voltage and temperature.`
+                            : 'The BMS currently reports this cell as healthy.'}
                         </div>
                       </div>
 
@@ -1132,54 +1213,67 @@ export function App() {
             {/* TAB 3: AI GUARDIAN & EXPLAINABLE AI */}
             {activeTab === 'guardian' && (
               <div className="space-y-6">
-                <div className="bg-white p-6 rounded-2xl border-2 border-emerald-500/80 space-y-5 shadow-xl">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <div className="bg-white p-4 sm:p-6 rounded-2xl border-2 border-emerald-500/80 space-y-5 shadow-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
                     <div className="flex items-center gap-2.5">
                       <ShieldAlert className="w-6 h-6 text-emerald-600" />
                       <div>
-                        <h2 className="text-xl font-black text-slate-900 heading-tech tracking-tight uppercase">
+                        <h2 className="text-base sm:text-xl font-black text-slate-900 heading-tech tracking-tight uppercase">
                           AI GUARDIAN SAFETY CENTER
                         </h2>
                         <p className="text-xs text-slate-500">Physics-Informed Neural Network (PINN) Safety Engine</p>
                       </div>
                     </div>
                     <span className={`text-xs font-mono font-bold px-3 py-1 rounded-full border ${
-                      batteryState.connectionState === 'CONNECTED'
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
-                        : 'bg-slate-100 text-slate-600 border-slate-300'
+                      batteryState.connectionState !== 'CONNECTED'
+                        ? 'bg-slate-100 text-slate-600 border-slate-300'
+                        : PinnEngine.evaluatePhysicsModel(batteryState).overallRiskLevel === 'CRITICAL'
+                        ? 'bg-red-50 text-red-700 border-red-300'
+                        : PinnEngine.evaluatePhysicsModel(batteryState).overallRiskLevel === 'ELEVATED'
+                        ? 'bg-orange-50 text-orange-700 border-orange-300'
+                        : PinnEngine.evaluatePhysicsModel(batteryState).overallRiskLevel === 'WATCH'
+                        ? 'bg-amber-50 text-amber-700 border-amber-300'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-300'
                     }`}>
-                      {batteryState.connectionState === 'CONNECTED' ? 'STATUS: NORMAL' : 'STANDBY (BLE DISCONNECTED)'}
+                      {batteryState.connectionState === 'CONNECTED' ? `STATUS: ${PinnEngine.evaluatePhysicsModel(batteryState).overallRiskLevel}` : 'STANDBY (NO LIVE DATA)'}
                     </span>
                   </div>
 
                   {(() => {
                     const isConn = batteryState.connectionState === 'CONNECTED';
                     const pinn = isConn ? PinnEngine.evaluatePhysicsModel(batteryState) : null;
+                    const severityClass = pinn?.overallRiskLevel === 'CRITICAL'
+                      ? 'text-red-700'
+                      : pinn?.overallRiskLevel === 'ELEVATED'
+                      ? 'text-orange-700'
+                      : pinn?.overallRiskLevel === 'WATCH'
+                      ? 'text-amber-700'
+                      : 'text-emerald-700';
 
                     return (
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                         <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-center flex flex-col justify-between">
                           <div className="text-[9px] font-extrabold text-slate-500 uppercase">RISK SCORE</div>
-                          <div className="text-2xl font-black text-emerald-600 my-0.5">
-                            {isConn ? `${pinn?.thermalRunawayRiskPct}%` : '0%'}
+                          <div className={`text-2xl font-black my-0.5 ${severityClass}`}>
+                            {isConn ? `${pinn?.thermalRunawayRiskPct}%` : '--'}
                           </div>
-                          <div className="text-[8px] font-mono text-slate-500">{isConn ? pinn?.overallRiskLevel || 'LOW RISK' : 'STANDBY'}</div>
+                          <div className="text-[8px] font-mono text-slate-500">{isConn ? pinn?.overallRiskLevel || 'UNKNOWN' : 'STANDBY'}</div>
                         </div>
 
                         <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-center flex flex-col justify-between">
-                          <div className="text-[9px] font-extrabold text-slate-500 uppercase">CONFIDENCE</div>
-                          <div className="text-2xl font-black text-emerald-600 my-0.5">
-                            {isConn ? `${pinn?.modelConfidencePct}%` : 'N/A'}
+                          <div className="text-[9px] font-extrabold text-slate-500 uppercase">LIVE BMS STATUS</div>
+                          <div className={`text-base sm:text-2xl font-black my-0.5 ${severityClass}`}>
+                            {isConn ? batteryState.safetyState : 'N/A'}
                           </div>
-                          <div className="text-[8px] font-mono text-slate-500">PINN MODEL</div>
+                          <div className="text-[8px] font-mono text-slate-500">FROM BATTERY PACKET</div>
                         </div>
 
                         <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-center flex flex-col justify-between">
-                          <div className="text-[9px] font-extrabold text-slate-500 uppercase">SAFE WINDOW</div>
-                          <div className="text-sm font-extrabold text-emerald-600 my-0.5">
-                            {isConn ? (pinn?.thermalRunawayRiskPct && pinn.thermalRunawayRiskPct > 30 ? '8-14 MIN' : '18-25 MIN') : 'STANDBY'}
+                          <div className="text-[9px] font-extrabold text-slate-500 uppercase">RECOMMENDED ACTION</div>
+                          <div className={`text-xs font-extrabold my-0.5 ${severityClass}`}>
+                            {!isConn ? 'STANDBY' : pinn?.overallRiskLevel === 'CRITICAL' ? 'STOP & INSPECT' : pinn?.overallRiskLevel === 'ELEVATED' ? 'REDUCE LOAD' : pinn?.overallRiskLevel === 'WATCH' ? 'MONITOR' : 'NORMAL USE'}
                           </div>
-                          <div className="text-[8px] font-mono text-slate-500">ESTIMATE</div>
+                          <div className="text-[8px] font-mono text-slate-500">BASED ON LIVE SIGNALS</div>
                         </div>
                       </div>
                     );
@@ -1187,36 +1281,31 @@ export function App() {
                 </div>
 
                 {/* EXPLAINABLE AI CONTRIBUTION BARS */}
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 space-y-4 shadow-md">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 space-y-4 shadow-md">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
                     <div className="flex items-center gap-2">
                       <Info className="w-5 h-5 text-emerald-600" />
-                      <h3 className="text-lg font-black text-slate-900 heading-tech tracking-tight uppercase">
+                      <h3 className="text-sm sm:text-lg font-black text-slate-900 heading-tech tracking-tight uppercase">
                         WHY DID RISK CHANGE? (EXPLAINABLE AI)
                       </h3>
                     </div>
-                    <span className="text-[11px] font-mono text-slate-500">PINN FEATURE ATTRIBUTION</span>
+                    <span className="text-[11px] font-mono text-slate-500">LIVE RISK SIGNALS · 0–100</span>
                   </div>
 
                   {batteryState.connectionState === 'CONNECTED' ? (
                     <div className="space-y-3 pt-1">
-                      {[
-                        { factor: 'Temperature Rise', pct: 35, color: 'bg-red-500', val: '+35%' },
-                        { factor: 'Cell Imbalance', pct: 25, color: 'bg-emerald-500', val: '+25%' },
-                        { factor: 'High Current Discharge', pct: 20, color: 'bg-emerald-500', val: '+20%' },
-                        { factor: 'SOH Degradation', pct: 12, color: 'bg-red-500', val: '+12%' },
-                        { factor: 'Other Factors', pct: 8, color: 'bg-slate-400', val: '+8%' },
-                      ].map((item, idx) => (
+                      {PinnEngine.evaluatePhysicsModel(batteryState).riskFactors.map((item, idx) => (
                         <div key={idx} className="space-y-1">
                           <div className="flex justify-between text-xs font-bold text-slate-700">
                             <span>{item.factor}</span>
-                            <span className="font-mono text-emerald-600">{item.val}</span>
+                            <span className={`font-mono ${item.score >= 75 ? 'text-red-600' : item.score >= 35 ? 'text-amber-600' : 'text-emerald-600'}`}>{item.score}/100</span>
                           </div>
                           <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
-                            <div className={`h-full ${item.color} rounded-full transition-all duration-500`} style={{ width: `${item.pct}%` }} />
+                            <div className={`h-full ${item.score >= 75 ? 'bg-red-500' : item.score >= 35 ? 'bg-amber-500' : 'bg-emerald-500'} rounded-full transition-all duration-500`} style={{ width: `${item.score}%` }} />
                           </div>
                         </div>
                       ))}
+                      <p className="text-[10px] text-slate-500">Scores show current signal levels; they are not percentages of causal contribution.</p>
                     </div>
                   ) : (
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-center space-y-2">

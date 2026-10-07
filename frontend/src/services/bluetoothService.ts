@@ -8,6 +8,7 @@ import { BLE_CONFIG } from './bleConfig';
 import { batteryStateService } from './batteryStateService';
 import type { RawBleTelemetryPayload } from '../types/telemetry';
 import { apiService } from './api';
+import { telemetrySocketService } from './telemetrySocket';
 
 export interface DiscoveredBleDevice {
   id: string;
@@ -16,11 +17,22 @@ export interface DiscoveredBleDevice {
   deviceObj?: any;
 }
 
+export interface BLEDeviceState {
+  connected: boolean;
+  deviceName: string | null;
+  deviceId: string | null;
+  rssi: number | null;
+  mode: 'HARDWARE' | 'SIMULATED' | 'NETWORK_BRIDGE' | 'DISCONNECTED';
+  lastTelemetry?: any;
+}
+
 class BluetoothService {
   private gattServer: any = null;
   private bleDevice: any = null;
   private telemetryCharacteristic: any = null;
   private isVirtualGattActive: boolean = false;
+  private bluetoothEnabled: boolean = false;
+  private networkBridgeActive: boolean = false;
   private virtualTimer: any = null;
   private sequenceCounter: number = 100;
   private reconnectAttempts: number = 0;
@@ -42,14 +54,7 @@ class BluetoothService {
     });
   }
 
-  public getState(): {
-    connected: boolean;
-    deviceName: string | null;
-    deviceId: string | null;
-    rssi: number | null;
-    mode: 'HARDWARE' | 'SIMULATED' | 'DISCONNECTED';
-    lastTelemetry?: any;
-  } {
+  public getState(): BLEDeviceState {
     const snapshot = batteryStateService.getSnapshot();
     const isConnected = snapshot.connectionState === 'CONNECTED';
     const isSim = snapshot.source === 'DEMO' || this.isVirtualGattActive;
@@ -58,7 +63,7 @@ class BluetoothService {
       deviceName: snapshot.deviceName,
       deviceId: snapshot.deviceId,
       rssi: snapshot.rssi,
-      mode: isConnected ? (isSim ? 'SIMULATED' : 'HARDWARE') : 'DISCONNECTED',
+      mode: isConnected ? (isSim ? 'SIMULATED' : this.networkBridgeActive ? 'NETWORK_BRIDGE' : 'HARDWARE') : 'DISCONNECTED',
       lastTelemetry: isConnected
         ? {
             voltage: snapshot.voltage,
@@ -70,6 +75,37 @@ class BluetoothService {
           }
         : undefined,
     };
+  }
+
+  public isBluetoothEnabled(): boolean {
+    return this.bluetoothEnabled || this.getState().connected;
+  }
+
+  public setBluetoothEnabled(enabled: boolean): void {
+    this.bluetoothEnabled = enabled;
+    if (!enabled) {
+      this.disconnect();
+    }
+  }
+
+  public markLanBridgeConnected(): void {
+    if (this.networkBridgeActive && batteryStateService.getSnapshot().connectionState === 'CONNECTED') return;
+    this.bluetoothEnabled = true;
+    this.networkBridgeActive = true;
+    batteryStateService.setConnectionState('CONNECTED', {
+      name: 'Digital Twin Battery (Wi-Fi Bluetooth-style bridge)',
+      id: 'BATTERY_PACK_01',
+      rssi: -42,
+    });
+    this.notify();
+  }
+
+  public markLanBridgeDisconnected(): void {
+    if (!this.networkBridgeActive) return;
+    this.networkBridgeActive = false;
+    this.bluetoothEnabled = false;
+    batteryStateService.setConnectionState('DISCONNECTED');
+    this.notify();
   }
 
   public async requestAndConnectDevice(): Promise<void> {
@@ -352,7 +388,7 @@ class BluetoothService {
         }
       }, delay);
     } else {
-      batteryStateService.setConnectionState('DISCONNECTED');
+      batteryStateState.setConnectionState('DISCONNECTED');
     }
   }
 
@@ -458,26 +494,29 @@ class BluetoothService {
         // 2. Secondary: Query Python FastAPI backend for Digital Twin telemetry
         const dtPayload = await apiService.getLiveDigitalTwinTelemetry();
         if (dtPayload && dtPayload.pack) {
-          const volt = dtPayload.pack.voltage || 25.6;
-          const rawCurr = dtPayload.pack.current;
-          const curr = (rawCurr !== undefined && rawCurr > 0.1)
+          const volt = dtPayload.pack.voltage_V ?? dtPayload.pack.voltage ?? 27.2;
+          const rawCurr = dtPayload.pack.current_A ?? dtPayload.pack.current;
+          const curr = (rawCurr !== undefined)
             ? rawCurr
             : +(14.2 + Math.sin(this.sequenceCounter * 0.15) * 2.8).toFixed(2);
-          const temp = dtPayload.thermal?.max_temperature || 22.5;
-          const soc = dtPayload.cells && dtPayload.cells.length > 0 ? dtPayload.cells[0].soc : 84.0;
-          const rawSoh = dtPayload.aging?.soh;
-          const cycleNum = dtPayload.pack?.cycle_number || 428;
-          const dynamicSoh = +(100 - cycleNum * 0.015 - 0.8 - (Math.sin(this.sequenceCounter * 0.05) * 1.5)).toFixed(1);
-          const soh = (rawSoh && rawSoh !== 96.4 && rawSoh !== 92.8) ? rawSoh : dynamicSoh;
-          const powerKw = dtPayload.pack.power && dtPayload.pack.power > 10
-            ? +(dtPayload.pack.power / 1000.0).toFixed(2)
+          const temp = dtPayload.thermal?.max_temperature_C ?? dtPayload.thermal?.max_temperature ?? 28.5;
+          const minTemp = dtPayload.thermal?.min_temperature_C ?? dtPayload.thermal?.min_temperature ?? 28.0;
+          const avgTemp = dtPayload.thermal?.average_temperature_C ?? dtPayload.thermal?.average_temperature ?? 28.5;
+          const soc = dtPayload.cells && dtPayload.cells.length > 0 ? (dtPayload.cells[0].soc ?? 54.3) : 54.3;
+          const rawSoh = dtPayload.aging?.soh ?? dtPayload.battery?.soh;
+          const cycleNum = dtPayload.battery?.cycle_number || dtPayload.pack?.cycle_number || 75;
+          const soh = rawSoh || 98.0;
+          const rawPowerW = dtPayload.pack.power_W ?? dtPayload.pack.power;
+          const powerKw = rawPowerW
+            ? +(rawPowerW / 1000.0).toFixed(2)
             : +((volt * curr) / 1000.0).toFixed(2);
+          const isFaulted = dtPayload.faults?.status !== 'NORMAL' || (dtPayload.faults?.active && dtPayload.faults.active.length > 0);
           const isThermalSpike = temp > 44.0;
 
           const livePayload: RawBleTelemetryPayload = {
             protocolVersion: BLE_CONFIG.PROTOCOL_VERSION,
             messageType: 'TELEMETRY',
-            sequenceNumber: this.sequenceCounter,
+            sequenceNumber: dtPayload.sequence || this.sequenceCounter,
             timestamp: dtPayload.timestamp || Date.now(),
             pack: {
               soc: Math.round(soc),
@@ -486,13 +525,13 @@ class BluetoothService {
               current: curr,
               power: powerKw,
               temperature: temp,
-              maxTemperature: dtPayload.thermal?.max_temperature || +(temp + 1.2).toFixed(1),
-              minTemperature: dtPayload.thermal?.average_temperature || +(temp - 1.1).toFixed(1),
-              internalResistance: dtPayload.aging?.internal_resistance || 1.2,
-              cycleCount: dtPayload.pack.cycle_number || 428,
+              maxTemperature: temp,
+              minTemperature: minTemp,
+              internalResistance: dtPayload.battery?.resistance_ohm || dtPayload.aging?.internal_resistance || 0.021,
+              cycleCount: cycleNum,
               estimatedRange: Math.round(soc * 4.1),
-              risk: dtPayload.fault?.status !== 'NORMAL' ? 75 : isThermalSpike ? 68 : Math.round(2 + Math.abs(Math.sin(step * 0.1) * 8)),
-              safetyState: dtPayload.fault?.status !== 'NORMAL' ? 'WARNING' : isThermalSpike ? 'WARNING' : 'HEALTHY',
+              risk: isFaulted ? 85 : isThermalSpike ? 68 : 5,
+              safetyState: isFaulted ? 'CRITICAL' : isThermalSpike ? 'WARNING' : 'HEALTHY',
             },
             environment: {
               ambientTemperature: 25.0,
@@ -506,16 +545,16 @@ class BluetoothService {
             },
             cells: Array.isArray(dtPayload.cells) && dtPayload.cells.length > 0
               ? dtPayload.cells.slice(0, 8).map((c: any, idx: number) => ({
-                  id: c.cell_id || idx + 1,
-                  voltage: c.voltage || 3.20,
-                  temperature: c.temperature || temp,
-                  deviation: c.resistance ? 0.05 : 0.01,
-                  risk: c.temperature > 40 ? 70 : 2,
-                  status: c.temperature > 40 ? 'WARNING' : 'HEALTHY',
+                  id: c.id || c.cell_id || idx + 1,
+                  voltage: c.voltage_V ?? c.voltage ?? 3.40,
+                  temperature: c.temperature_C ?? c.temperature ?? temp,
+                  deviation: 0.01,
+                  risk: (c.temperature_C || c.temperature || temp) > 40 ? 70 : 2,
+                  status: (c.temperature_C || c.temperature || temp) > 40 ? 'WARNING' : 'HEALTHY',
                 }))
               : Array.from({ length: 8 }, (_, idx) => ({
                   id: idx + 1,
-                  voltage: 3.20,
+                  voltage: 3.40,
                   temperature: temp,
                   deviation: 0.01,
                   risk: 2,
@@ -630,11 +669,41 @@ class BluetoothService {
   }
 
   /**
-   * Disconnect BLE GATT Server
+   * Connect to Laptop Battery Broadcaster via TCP-style 3-Way Handshake (SYN -> SYN-ACK -> ACK)
    */
-  public disconnect(): void {
+  public async connectToCloudLaptopBatteryStream(batteryId: string = 'BATTERY_PACK_01'): Promise<void> {
+    this.disconnect(false);
+    this.isManualDisconnect = false;
+    this.bluetoothEnabled = true;
+    this.networkBridgeActive = false;
+    batteryStateService.setConnectionState('CONNECTING', {
+      name: `Waiting for Digital Twin (${batteryId})...`,
+      id: batteryId,
+    });
+    telemetrySocketService.connect();
+    this.notify();
+  }
+
+  /**
+   * Disconnect BLE GATT Server or Cloud Stream
+   */
+  public disconnect(notifyRemote: boolean = true): void {
+    this.bluetoothEnabled = false;
     this.isManualDisconnect = true;
     this.stopVirtualGattPeripheral();
+    try {
+      localStorage.removeItem('brain_handshake_BATTERY_PACK_01');
+    } catch (e) {}
+
+    if (notifyRemote) {
+      const backendBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const rootUrl = backendBase.replace(/\/$/, '').replace(/\/api\/v1$/, '');
+      fetch(`${rootUrl}/battery/handshake`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ step: 'DISCONNECT', battery_id: 'BATTERY_PACK_01' })
+      }).catch(() => {});
+    }
 
     if (this.telemetryCharacteristic) {
       try {

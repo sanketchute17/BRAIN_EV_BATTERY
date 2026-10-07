@@ -177,6 +177,24 @@ class BatteryStateService {
     }
 
     const packetsReceived = this.state.diagnostics.packetsReceived + 1;
+    const previousSafetyState = this.state.safetyState;
+    const incomingSafetyState = payload.pack.safetyState || 'HEALTHY';
+
+    if (incomingSafetyState !== previousSafetyState) {
+      if (incomingSafetyState === 'CRITICAL' || incomingSafetyState === 'WARNING') {
+        this.addNotification({
+          title: `Battery ${incomingSafetyState} condition`,
+          message: `The live BMS reports risk ${Math.round(payload.pack.risk || 0)}%. Review the fault and cell readings.`,
+          type: incomingSafetyState === 'CRITICAL' ? 'error' : 'warning',
+        });
+      } else if (incomingSafetyState === 'HEALTHY' && previousSafetyState !== 'HEALTHY') {
+        this.addNotification({
+          title: 'Battery condition recovered',
+          message: 'The latest live BMS packet reports a healthy condition.',
+          type: 'success',
+        });
+      }
+    }
 
     // Check for alerts / triggers
     const maxTemp = payload.pack.maxTemperature || payload.pack.temperature;
@@ -218,7 +236,7 @@ class BatteryStateService {
       cycleCount: payload.pack.cycleCount || 428,
       estimatedRange: payload.pack.estimatedRange || Math.round(payload.pack.soc * 4.1),
       risk: payload.pack.risk,
-      safetyState: payload.pack.safetyState || 'HEALTHY',
+      safetyState: incomingSafetyState,
 
       ambientTemperature: payload.environment?.ambientTemperature ?? 29.0,
       charging: payload.charging || {

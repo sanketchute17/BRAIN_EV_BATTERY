@@ -89,12 +89,58 @@ export interface AuthResponse {
 
 const LOCAL_USERS_DB_KEY = 'brain_registered_users_db';
 
+const DEFAULT_DEMO_USERS: Record<string, any> = {
+  'rider@brainev.com': {
+    id: 'usr_ather_01',
+    fullName: 'Rohit More',
+    full_name: 'Rohit More',
+    email: 'rider@brainev.com',
+    mobile: '+91 98201 45892',
+    password: 'password123',
+    role: 'EV Rider / Owner',
+    evModel: 'Ather 450X',
+    ev_model: 'Ather 450X',
+    batteryChemistry: 'NMC (Nickel Manganese Cobalt)',
+    battery_chemistry: 'NMC (Nickel Manganese Cobalt)',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+  'ola.rider@brainev.com': {
+    id: 'usr_ola_02',
+    fullName: 'Ananya Sharma',
+    full_name: 'Ananya Sharma',
+    email: 'ola.rider@brainev.com',
+    mobile: '+91 98765 43210',
+    password: 'password123',
+    role: 'EV Rider / Owner',
+    evModel: 'Ola S1 Pro',
+    ev_model: 'Ola S1 Pro',
+    batteryChemistry: 'LFP (Lithium Iron Phosphate)',
+    battery_chemistry: 'LFP (Lithium Iron Phosphate)',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+  'admin@brainev.com': {
+    id: 'usr_admin_03',
+    fullName: 'Vikram Malhotra',
+    full_name: 'Vikram Malhotra',
+    email: 'admin@brainev.com',
+    mobile: '+91 91234 56789',
+    password: 'admin123',
+    role: 'Company Fleet Admin',
+    evModel: 'TVS iQube Electric',
+    ev_model: 'TVS iQube Electric',
+    batteryChemistry: 'LFP (Lithium Iron Phosphate)',
+    battery_chemistry: 'LFP (Lithium Iron Phosphate)',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+};
+
 function getLocalUsersDB(): Record<string, any> {
   try {
     const data = localStorage.getItem(LOCAL_USERS_DB_KEY);
-    return data ? JSON.parse(data) : {};
+    const parsed = data ? JSON.parse(data) : {};
+    return { ...DEFAULT_DEMO_USERS, ...parsed };
   } catch {
-    return {};
+    return DEFAULT_DEMO_USERS;
   }
 }
 
@@ -792,15 +838,27 @@ export const apiService = {
     return null;
   },
 
+  async predictWithBatteryModel(telemetry: Record<string, unknown>): Promise<any> {
+    const response = await fetchWithFailover('/pkl/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telemetry }),
+    });
+    if (!response.ok) {
+      throw new Error(`Battery model request failed (${response.status}).`);
+    }
+    return response.json();
+  },
+
   /**
    * Register Connected BLE Hardware BMS Device
    */
   async connectBleDevice(payload: { device_id: string; name: string; rssi?: number; firmware?: string }): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/connect', {
+      const res = await fetchWithFailover('/battery/handshake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ step: 'SYN', battery_id: payload.device_id }),
       });
       if (res.ok) return await res.json();
     } catch {
@@ -823,11 +881,7 @@ export const apiService = {
     bms_status?: string;
   }): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/telemetry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetchWithFailover('/battery/telemetry');
       if (res.ok) return await res.json();
     } catch {
       // Fallback
@@ -840,7 +894,7 @@ export const apiService = {
    */
   async getBleDevices(): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/devices');
+      const res = await fetchWithFailover('/battery/status');
       if (res.ok) return await res.json();
     } catch {
       // Fallback
@@ -853,7 +907,7 @@ export const apiService = {
    */
   async getLiveDigitalTwinTelemetry(): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/telemetry');
+      const res = await fetchWithFailover('/battery/telemetry');
       if (res.ok) return await res.json();
     } catch {
       // Fallback
@@ -866,10 +920,10 @@ export const apiService = {
    */
   async injectDigitalTwinFault(fault: string, cell_id: number = 5, active: boolean = true): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/fault', {
+      const res = await fetchWithFailover('/battery/fault', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fault, cell_id, active }),
+        body: JSON.stringify({ fault_type: fault, cell_id, active }),
       });
       if (res.ok) return await res.json();
     } catch {
@@ -883,10 +937,10 @@ export const apiService = {
    */
   async updateDigitalTwinState(load_current_A?: number, sim_mode?: string): Promise<any> {
     try {
-      const res = await fetchWithFailover('/bms/state', {
+      const res = await fetchWithFailover('/battery/scenario', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ load_current_A, sim_mode }),
+        body: JSON.stringify({ scenario: sim_mode || 'NORMAL', load_current_A }),
       });
       if (res.ok) return await res.json();
     } catch {

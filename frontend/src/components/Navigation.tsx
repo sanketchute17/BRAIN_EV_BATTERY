@@ -32,7 +32,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         isVisible ? 'translate-y-0' : 'translate-y-full'
       }`}
     >
-      <div className="w-full flex items-center justify-around">
+      <div className="grid w-full max-w-xl grid-cols-6 items-center gap-1 mx-auto">
         {tabs.map((t) => {
           const Icon = t.icon;
           const isActive = activeTab === t.id;
@@ -40,7 +40,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             <button
               key={t.id}
               onClick={() => onSelectTab(t.id)}
-              className={`relative flex flex-col items-center gap-0.5 px-2 py-1 transition-all cursor-pointer ${
+              className={`relative flex w-full min-w-0 flex-col items-center gap-0.5 px-1 py-1 transition-all cursor-pointer ${
                 isActive ? 'text-emerald-600 font-extrabold' : 'text-slate-400 hover:text-slate-700'
               }`}
             >
@@ -48,16 +48,16 @@ export const Navigation: React.FC<NavigationProps> = ({
                 <span className="absolute -top-1 w-6 h-0.5 bg-emerald-500 rounded-full" />
               )}
               <Icon className={`w-5 h-5 ${isActive ? 'text-emerald-600 stroke-[2.5]' : 'stroke-[1.8]'}`} />
-              <span className="text-[10px] font-bold tracking-tight">{t.label}</span>
+              <span className="w-full truncate text-center text-[9px] sm:text-[10px] font-bold tracking-tight">{t.label}</span>
             </button>
           );
         })}
         <button
           onClick={onOpenDrawer}
-          className="flex flex-col items-center gap-0.5 px-2 py-1 text-slate-400 hover:text-slate-700 transition-all cursor-pointer"
+          className="flex w-full min-w-0 flex-col items-center gap-0.5 px-1 py-1 text-slate-400 hover:text-slate-700 transition-all cursor-pointer"
         >
           <Menu className="w-5 h-5 stroke-[1.8]" />
-          <span className="text-[10px] font-bold tracking-tight">Menu</span>
+          <span className="w-full truncate text-center text-[9px] sm:text-[10px] font-bold tracking-tight">Menu</span>
         </button>
       </div>
 

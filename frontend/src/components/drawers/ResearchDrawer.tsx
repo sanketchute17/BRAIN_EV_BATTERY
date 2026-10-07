@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { NormalizedBatteryState } from '../../types/telemetry';
 import { ArrowLeft, BookOpen, Activity, Cpu, LineChart, ShieldCheck, Sliders } from 'lucide-react';
+import { apiService } from '../../services/api';
 
 interface ResearchDrawerProps {
   batteryState: NormalizedBatteryState;
@@ -11,6 +12,61 @@ export const ResearchDrawer: React.FC<ResearchDrawerProps> = ({ batteryState, on
   const [sliderTemp, setSliderTemp] = useState<number>(batteryState.maxTemperature || batteryState.temperature || 25);
   const [sliderCurrent, setSliderCurrent] = useState<number>(Math.abs(batteryState.current) || 35);
   const [sliderCycles, setSliderCycles] = useState<number>(batteryState.cycleCount || 428);
+  const [modelSummary, setModelSummary] = useState<any>(null);
+  const [modelPrediction, setModelPrediction] = useState<any>(null);
+  const [modelError, setModelError] = useState('');
+  const [isPredicting, setIsPredicting] = useState(false);
+
+  useEffect(() => {
+    apiService.getPklSummary().then(setModelSummary).catch((error) => setModelError(error.message));
+  }, []);
+
+  const runBatteryModelPrediction = async () => {
+    setIsPredicting(true);
+    setModelError('');
+    try {
+      const cells = batteryState.cells || [];
+      const result = await apiService.predictWithBatteryModel({
+        battery_id: batteryState.deviceId || 'BATTERY_PACK_01',
+        voltage: batteryState.voltage,
+        current: batteryState.current,
+        temperature: batteryState.temperature,
+        maxTemperature: batteryState.maxTemperature,
+        cycleCount: batteryState.cycleCount,
+        soc: batteryState.soc,
+        soh: batteryState.soh,
+        pack: {
+          voltage_V: batteryState.voltage,
+          current_A: batteryState.current,
+          cycle_count: batteryState.cycleCount,
+          soc_percent: batteryState.soc,
+        },
+        cells: cells.map((cell) => ({
+          id: cell.id,
+          voltage_V: cell.voltage,
+          temperature_C: cell.temperature,
+          resistance_ohm: batteryState.internalResistance / 1000,
+          effective_resistance_ohm: batteryState.internalResistance / 1000,
+        })),
+        thermal: {
+          average_temperature_C: batteryState.temperature,
+          max_temperature_C: batteryState.maxTemperature,
+        },
+        battery: { cycle_number: batteryState.cycleCount },
+        predictions: { soh_percent: batteryState.soh, soc_percent: batteryState.soc },
+        cooling: { flow_rate_LPM: 0 },
+        faults: { active: [] },
+      });
+      setModelPrediction(result);
+      if (!result.available) setModelError(result.plain_explanation || 'The model cannot produce a prediction from this file.');
+    } catch (error: any) {
+      setModelError(error.message || 'Could not run the battery model.');
+    } finally {
+      setIsPredicting(false);
+    }
+  };
+
+  const batteryModelLoadError = modelSummary?.load_errors?.['battery_intelligence.pkl'];
 
   const lithiumPlatingIndex = +(0.02 + (sliderTemp > 40 ? 0.22 : 0.03) + (sliderCurrent / 150) * 0.12).toFixed(3);
   const arrheniusDegradationFactor = +(1.0 + Math.pow(sliderTemp / 25, 2.1) + (sliderCurrent / 100) * 0.4).toFixed(2);
@@ -76,6 +132,48 @@ export const ResearchDrawer: React.FC<ResearchDrawerProps> = ({ batteryState, on
           PINN v3.2
         </span>
       </div>
+
+      <section className="rounded-2xl border border-blue-200 bg-blue-50 p-4 space-y-3" aria-live="polite">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-black text-slate-900">Battery AI prediction</h3>
+            <p className="mt-1 text-xs text-slate-600">Uses battery_intelligence.pkl with the current battery readings.</p>
+          </div>
+          <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${modelSummary?.battery_model_ready ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
+            {modelSummary?.battery_model_ready ? 'MODEL READY' : 'MODEL NOT READY'}
+          </span>
+        </div>
+        <p className="text-xs leading-relaxed text-slate-700">
+          In simple terms: the model looks at the battery readings it learned from during training and estimates its trained target. It is a best estimate, not a guarantee. This result is produced by the PKL model, separate from the physics-based charts below.
+        </p>
+        {batteryModelLoadError && (
+          <div className="rounded-xl border border-amber-200 bg-white p-3 text-[11px] text-amber-900">
+            <strong>The model file could not be loaded:</strong> {batteryModelLoadError}. No prediction is shown rather than guessing.
+          </div>
+        )}
+        {modelError && !batteryModelLoadError && (
+          <div className="rounded-xl border border-amber-200 bg-white p-3 text-[11px] text-amber-900">{modelError}</div>
+        )}
+        <button
+          type="button"
+          onClick={runBatteryModelPrediction}
+          disabled={isPredicting || batteryState.connectionState !== 'CONNECTED' || !modelSummary?.battery_model_ready}
+          className="rounded-xl bg-blue-700 px-4 py-2 text-xs font-black text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isPredicting ? 'Checking model…' : 'Predict from current battery'}
+        </button>
+        {batteryState.connectionState !== 'CONNECTED' && <p className="text-[10px] text-slate-500">Connect the battery to use live readings.</p>}
+        {modelPrediction?.available && (
+          <div className="rounded-xl border border-emerald-200 bg-white p-3 space-y-2">
+            <div className="text-xs font-black text-emerald-800">Model result: {String(modelPrediction.prediction)}</div>
+            <p className="text-xs text-slate-700">{modelPrediction.plain_explanation}</p>
+            <details className="text-[10px] text-slate-600">
+              <summary className="cursor-pointer font-bold">What readings did it use?</summary>
+              <pre className="mt-2 overflow-auto rounded bg-slate-50 p-2">{JSON.stringify(modelPrediction.inputs_used, null, 2)}</pre>
+            </details>
+          </div>
+        )}
+      </section>
 
       {/* INTERACTIVE PARAMETER TUNING SLIDERS CARD */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3">
@@ -179,9 +277,9 @@ export const ResearchDrawer: React.FC<ResearchDrawerProps> = ({ batteryState, on
         </div>
 
         <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-sm space-y-1">
-          <div className="text-[9px] font-extrabold text-slate-400 uppercase">MODEL CONFIDENCE</div>
-          <div className="text-xl font-black text-emerald-600">96.8%</div>
-          <div className="text-[9px] font-mono text-slate-500">Validation R² Score</div>
+          <div className="text-[9px] font-extrabold text-slate-400 uppercase">ESTIMATE TYPE</div>
+          <div className="text-xl font-black text-blue-600">Physics</div>
+          <div className="text-[9px] font-mono text-slate-500">Not the PKL model output</div>
         </div>
       </div>
 

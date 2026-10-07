@@ -14,6 +14,7 @@ export interface PinnRiskAnalysis {
   remainingUsefulLifeDays: number;  // RUL converted to operational days
   cellImbalanceIndex: number;       // Standard deviation across series cell voltages
   overallRiskLevel: 'SAFE' | 'WATCH' | 'ELEVATED' | 'CRITICAL';
+  riskFactors: Array<{ factor: string; score: number }>;
   physicsResidualError: number;     // PINN differential equation loss residual
   modelConfidencePct: number;       // Model prediction accuracy metric
   recommendations: string[];
@@ -61,7 +62,7 @@ export class PinnEngine {
       cellImbalance = Math.round(Math.sqrt(vVar) * 1000) / 1000;
     }
 
-    // 5. Thermal Runaway Risk Percentage Calculation
+    // 5. Physics risk plus explicit BMS/anomaly signals from the live packet.
     let riskPct = 5.0;
     if (temp > 55) riskPct += 50.0;
     else if (temp > 45) riskPct += 25.0;
@@ -69,7 +70,17 @@ export class PinnEngine {
 
     if (predTemp15Min > 52) riskPct += 25.0;
     if (cellImbalance > 0.04) riskPct += 15.0;
-    if (current > 150) riskPct += 10.0;
+    if (current > 44) riskPct += 15.0;
+    else if (current > 30) riskPct += 8.0;
+
+    const stateRisk = Number.isFinite(state.risk) ? Math.max(0, Math.min(100, state.risk)) : 0;
+    const stateStatusRisk = state.safetyState === 'CRITICAL' ? 85 : state.safetyState === 'WARNING' ? 55 : state.safetyState === 'WATCH' ? 30 : 0;
+    const cellRisk = Math.max(0, ...state.cells.map((cell) => {
+      const explicitRisk = Number.isFinite(cell.risk) ? cell.risk : 0;
+      const statusRisk = cell.status === 'CRITICAL' ? 85 : cell.status === 'WARNING' ? 55 : cell.status === 'WATCH' ? 30 : 0;
+      return Math.max(explicitRisk, statusRisk);
+    }));
+    riskPct = Math.max(riskPct, stateRisk, stateStatusRisk, cellRisk);
 
     riskPct = Math.min(99.9, Math.max(1.0, Math.round(riskPct * 10) / 10));
 
@@ -85,16 +96,27 @@ export class PinnEngine {
 
     // Overall Risk Classification
     let riskLevel: 'SAFE' | 'WATCH' | 'ELEVATED' | 'CRITICAL' = 'SAFE';
-    if (riskPct >= 65 || temp >= 52) riskLevel = 'CRITICAL';
+    if (riskPct >= 75 || temp >= 52 || state.safetyState === 'CRITICAL' || state.cells.some((cell) => cell.status === 'CRITICAL')) riskLevel = 'CRITICAL';
     else if (riskPct >= 35 || temp >= 45) riskLevel = 'ELEVATED';
     else if (riskPct >= 18 || temp >= 40 || cellImbalance >= 0.03) riskLevel = 'WATCH';
+
+    const riskFactors = [
+      { factor: 'BMS / injected fault signal', score: Math.round(Math.max(stateRisk, stateStatusRisk, cellRisk)) },
+      { factor: 'Temperature', score: temp > 55 ? 100 : temp > 45 ? 75 : temp > 40 ? 45 : temp > 35 ? 20 : 5 },
+      { factor: 'Cell voltage imbalance', score: cellImbalance > 0.04 ? 90 : cellImbalance > 0.03 ? 65 : cellImbalance > 0.02 ? 35 : 5 },
+      { factor: 'Current load', score: current > 52 ? 100 : current > 44 ? 75 : current > 30 ? 45 : current > 20 ? 20 : 5 },
+    ].sort((a, b) => b.score - a.score);
 
     // Tailored Recommendations
     const recs: string[] = [];
     if (riskLevel === 'CRITICAL') {
-      recs.push('CRITICAL: High thermal load detected. Initiate active liquid cooling & throttle peak current discharge.');
+      recs.push(state.safetyState === 'CRITICAL' || cellRisk >= 75
+        ? 'CRITICAL: The BMS reports a critical condition. Stop or reduce battery load and inspect the active fault before continuing.'
+        : 'CRITICAL: High thermal load detected. Reduce current demand and allow the battery to cool.');
     } else if (riskLevel === 'ELEVATED') {
-      recs.push('WARNING: Elevated cell temperature drift. Recommend limiting fast charging above 80% SOC.');
+      recs.push(state.safetyState === 'WARNING' || cellRisk >= 55
+        ? 'WARNING: The BMS detected an abnormal cell or injected fault. Check the fault details and avoid heavy load.'
+        : 'WARNING: Elevated temperature or load detected. Limit fast charging and monitor the pack.');
     } else if (cellImbalance >= 0.03) {
       recs.push('BALANCE: Cell voltage variance exceeds 30mV. Schedule BMS passive cell balancing cycle.');
     } else {
@@ -113,6 +135,7 @@ export class PinnEngine {
       remainingUsefulLifeDays: rulDays,
       cellImbalanceIndex: cellImbalance,
       overallRiskLevel: riskLevel,
+      riskFactors,
       physicsResidualError: physicsResidual,
       modelConfidencePct: confidencePct,
       recommendations: recs,

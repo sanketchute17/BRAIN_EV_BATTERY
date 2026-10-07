@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Bluetooth, Radio, Wifi, CheckCircle2 } from 'lucide-react';
+import { Bluetooth, Radio, Wifi, CheckCircle2, QrCode } from 'lucide-react';
 import { bluetoothService } from '../services/bluetoothService';
+import { QRPairingModal } from './QRPairingModal';
 
 export type CasingMode = 'SOLID' | 'TRANSPARENT' | 'X-RAY';
 export type FlowMode = 'CHARGING' | 'DISCHARGING' | 'IDLE';
@@ -20,6 +21,7 @@ interface ComponentInfo {
 
 interface Battery3DViewProps {
   status?: 'HEALTHY' | 'WATCH' | 'WARNING' | 'CRITICAL';
+  isConnected?: boolean;
   expanded?: boolean;
   interactive?: boolean;
   flowMode?: FlowMode;
@@ -31,6 +33,7 @@ interface Battery3DViewProps {
 
 export const Battery3DView: React.FC<Battery3DViewProps> = ({
   status = 'HEALTHY',
+  isConnected = false,
   expanded = false,
   interactive = true,
   isSimulated = true,
@@ -45,6 +48,7 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
   const [autoRotate, setAutoRotate] = useState(true);
   const [selectedInfo, setSelectedInfo] = useState<ComponentInfo | null>(null);
   const [isBleBroadcasting, setIsBleBroadcasting] = useState(false);
+  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
 
   const toggleBleBroadcasting = () => {
     if (!isBleBroadcasting) {
@@ -213,10 +217,10 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
     rootGroupRef.current = rootGroup;
     scene.add(rootGroup);
 
-    let cellGlowHex = 0x00e676; // Electric Green for Healthy State
-    if (status === 'WATCH') cellGlowHex = 0xf59e0b;
-    if (status === 'WARNING') cellGlowHex = 0xf97316;
-    if (status === 'CRITICAL') cellGlowHex = 0xef4444;
+    let cellGlowHex = isConnected ? 0x00e676 : 0x334155; // Electric Green if connected, Dark Metallic Slate if disconnected
+    if (isConnected && status === 'WATCH') cellGlowHex = 0xf59e0b;
+    if (isConnected && status === 'WARNING') cellGlowHex = 0xf97316;
+    if (isConnected && status === 'CRITICAL') cellGlowHex = 0xef4444;
 
     // STUDIO LIGHTING SETUP
     const ambientLight = new THREE.AmbientLight(0xffffff, 2.8);
@@ -235,12 +239,12 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
     rimLight.position.set(0, 10, -14);
     scene.add(rimLight);
 
-    const cellInternalGlowLight = new THREE.PointLight(cellGlowHex, 6.5, 12);
+    const cellInternalGlowLight = new THREE.PointLight(cellGlowHex, isConnected ? 6.5 : 0.5, 12);
     cellInternalGlowLight.position.set(0.5, 0.0, 1.2);
     rootGroup.add(cellInternalGlowLight);
 
     // Subtle cyan/green ground ambient light glow underneath battery
-    const groundGlowLight = new THREE.PointLight(0x00e676, 3.0, 8);
+    const groundGlowLight = new THREE.PointLight(isConnected ? 0x00e676 : 0x475569, isConnected ? 3.0 : 0.2, 8);
     groundGlowLight.position.set(0, -1.8, 0);
     rootGroup.add(groundGlowLight);
 
@@ -257,15 +261,15 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
     });
     const chassisMesh = new THREE.Mesh(chassisGeo, chassisMat);
     chassisMesh.position.y = -1.2;
-    chassisMesh.userData = { name: 'Lower Structural Chassis', type: 'Aluminum Chassis', status: 'HEALTHY', risk: '0%', description: 'Heavy-duty high strength alloy bottom tray protecting battery cells.' };
+    chassisMesh.userData = { name: 'Lower Structural Chassis', type: 'Aluminum Chassis', status: isConnected ? 'HEALTHY' : 'STANDBY', risk: '0%', description: 'Heavy-duty high strength alloy bottom tray protecting battery cells.' };
     rootGroup.add(chassisMesh);
 
     // Bottom Cooling Plate Structure
     const coolingPlateGeo = new THREE.BoxGeometry(packWidth - 0.6, 0.08, packDepth - 0.6);
-    const coolingPlateMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, metalness: 0.8, roughness: 0.2, emissive: 0x0284c7, emissiveIntensity: 0.2 });
+    const coolingPlateMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, metalness: 0.8, roughness: 0.2, emissive: 0x0284c7, emissiveIntensity: isConnected ? 0.2 : 0.0 });
     const coolingPlate = new THREE.Mesh(coolingPlateGeo, coolingPlateMat);
     coolingPlate.position.y = -1.0;
-    coolingPlate.userData = { name: 'Integrated Liquid Cooling Plate', type: 'Thermal Management Plate', status: 'ACTIVE', risk: '0%', description: 'Cold-plate heat exchanger channels routing liquid coolant under cells.' };
+    coolingPlate.userData = { name: 'Integrated Liquid Cooling Plate', type: 'Thermal Management Plate', status: isConnected ? 'ACTIVE' : 'STANDBY', risk: '0%', description: 'Cold-plate heat exchanger channels routing liquid coolant under cells.' };
     rootGroup.add(coolingPlate);
 
     // Corner Mounting Brackets
@@ -294,15 +298,15 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
       const cellZ = 1.05;
 
       // Telemetry anomaly check under warning/critical status
-      const hasProblem = (status === 'WARNING' || status === 'CRITICAL') && (cellId === 3 || cellId === 6);
+      const hasProblem = isConnected && (status === 'WARNING' || status === 'CRITICAL') && (cellId === 3 || cellId === 6);
       const activeCellGlow = hasProblem ? 0xef4444 : cellGlowHex;
 
       const glowingCellMat = new THREE.MeshStandardMaterial({
         color: activeCellGlow,
         emissive: activeCellGlow,
-        emissiveIntensity: hasProblem ? 3.5 : 1.8,
-        metalness: 0.35,
-        roughness: 0.1,
+        emissiveIntensity: isConnected ? (hasProblem ? 3.5 : 1.8) : 0.05,
+        metalness: isConnected ? 0.35 : 0.85,
+        roughness: isConnected ? 0.1 : 0.4,
       });
 
       const cellMesh = new THREE.Mesh(glowingCellGeo, glowingCellMat);
@@ -352,15 +356,15 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
       const cellX = -1.8 + col * 0.52;
       const cellZ = -1.05;
 
-      const hasProblem = status === 'CRITICAL' && cellId === 12;
-      const activeCellGlow = hasProblem ? 0xef4444 : 0x0284c7;
+      const hasProblem = isConnected && status === 'CRITICAL' && cellId === 12;
+      const activeCellGlow = hasProblem ? 0xef4444 : (isConnected ? 0x0284c7 : 0x334155);
 
       const darkCellMat = new THREE.MeshStandardMaterial({
         color: hasProblem ? 0xef4444 : 0x1e293b,
         emissive: activeCellGlow,
-        emissiveIntensity: hasProblem ? 3.0 : 0.6,
-        metalness: 0.85,
-        roughness: 0.25,
+        emissiveIntensity: isConnected ? (hasProblem ? 3.0 : 0.6) : 0.05,
+        metalness: isConnected ? 0.85 : 0.95,
+        roughness: isConnected ? 0.25 : 0.5,
       });
 
       const darkCell = new THREE.Mesh(glowingCellGeo, darkCellMat);
@@ -798,6 +802,7 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
   }, [casingMode]);
 
   return (
+    <>
     <div className="w-full flex flex-col gap-2 select-none">
       {/* ── TOP 3D CONTROL TOOLBAR ── */}
       {!hideControls && (
@@ -828,6 +833,15 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
             >
               <Bluetooth className="w-3.5 h-3.5 text-emerald-400" />
               <span>{isBleBroadcasting ? 'BLE BROADCASTING' : 'START BLE BROADCAST'}</span>
+            </button>
+
+            <button
+              onClick={() => setIsQRModalOpen(true)}
+              className="px-2.5 py-1 text-[11px] font-extrabold rounded-xl border transition cursor-pointer flex items-center gap-1 bg-violet-900/60 text-violet-300 border-violet-500/40 hover:bg-violet-900/80"
+              title="Generate QR Code for mobile app pairing"
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>GENERATE QR</span>
             </button>
 
             <button
@@ -906,6 +920,14 @@ export const Battery3DView: React.FC<Battery3DViewProps> = ({
         )}
       </div>
     </div>
+
+    {/* QR Pairing Modal */}
+    <QRPairingModal
+      isOpen={isQRModalOpen}
+      onClose={() => setIsQRModalOpen(false)}
+      batteryId="BATTERY_PACK_01"
+    />
+    </>
   );
 };
 
