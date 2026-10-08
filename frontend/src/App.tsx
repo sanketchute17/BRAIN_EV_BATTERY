@@ -217,6 +217,23 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (authState === 'AUTHENTICATED' && !isDemoMode) {
+      apiService.getCurrentUser().then((usr) => {
+        if (usr) {
+          setCurrentUser(usr);
+          try {
+            localStorage.setItem('brain_auth_session', JSON.stringify({
+              authenticated: true,
+              isDemo: false,
+              user: usr,
+            }));
+          } catch (e) {}
+        }
+      }).catch(() => {});
+    }
+  }, [authState, isDemoMode]);
+
   const getPackArchitecture = (modelStr?: string) => {
     const m = (modelStr || currentUser?.ev_model || currentUser?.evModel || '').toLowerCase();
     if (m.includes('ola')) {
@@ -408,7 +425,7 @@ export function App() {
                 return <User className="w-3.5 h-3.5 text-emerald-600" />;
               })()}
               <span className="text-xs truncate max-w-[110px]">
-                {isDemoMode ? 'Demo Guest' : (currentUser?.full_name?.split(' ')[0] || 'Operator')}
+                {currentUser?.full_name?.split(' ')[0] || 'Sanket'}
               </span>
             </button>
           </div>
@@ -790,7 +807,7 @@ export function App() {
                         <span className={`w-1.5 h-1.5 rounded-full ${batteryState.connectionState !== 'CONNECTED' ? 'bg-slate-400' : batteryState.safetyState === 'CRITICAL' ? 'bg-red-500 animate-pulse' : batteryState.safetyState !== 'HEALTHY' ? 'bg-amber-500 animate-pulse' : 'bg-[#059669] animate-pulse'}`} /> {batteryState.connectionState === 'CONNECTED' ? batteryState.safetyState === 'HEALTHY' ? 'Live' : batteryState.safetyState : 'Standby'}
                       </span>
                       <div>
-                        <h3 className="text-xs font-black text-slate-900 tracking-tight">3D Digital Twin</h3>
+                        <h3 className="text-xs sm:text-sm font-black text-slate-900 tracking-tight">3D Digital Twin</h3>
                         <p className="text-[9px] font-semibold text-slate-400">Real-time battery visualization</p>
                       </div>
                     </div>
@@ -821,30 +838,32 @@ export function App() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
                     <div className="bg-[#F8FAFC] p-2 rounded-2xl border border-slate-200/60 text-center">
                       <div className="flex items-center justify-center gap-1 text-[9px] font-extrabold text-slate-400 uppercase">
-                        <BatteryCharging className="w-3 h-3 text-[#059669]" /> SOC
+                        <Zap className="w-3 h-3 text-[#059669]" /> SOC
                       </div>
-                      <div className="text-sm font-black text-[#059669] mt-0.5">{Math.round(batteryState.soc)}%</div>
+                      <div className="text-sm font-black text-[#059669] mt-0.5">{Math.round(batteryState.soc || 0)}%</div>
                     </div>
 
                     <div className="bg-[#F8FAFC] p-2 rounded-2xl border border-slate-200/60 text-center">
                       <div className="flex items-center justify-center gap-1 text-[9px] font-extrabold text-slate-400 uppercase">
                         <Heart className="w-3 h-3 text-[#2563EB]" /> SOH
                       </div>
-                      <div className="text-sm font-black text-[#2563EB] mt-0.5">{batteryState.soh}%</div>
+                      <div className="text-sm font-black text-[#2563EB] mt-0.5">{batteryState.soh || 0}%</div>
                     </div>
 
                     <div className="bg-[#F8FAFC] p-2 rounded-2xl border border-slate-200/60 text-center">
                       <div className="flex items-center justify-center gap-1 text-[9px] font-extrabold text-slate-400 uppercase">
                         <Thermometer className="w-3 h-3 text-[#EA580C]" /> Temp
                       </div>
-                      <div className="text-sm font-black text-[#EA580C] mt-0.5">{batteryState.maxTemperature || batteryState.temperature}°C</div>
+                      <div className="text-sm font-black text-[#EA580C] mt-0.5">{batteryState.maxTemperature || batteryState.temperature || 0}°C</div>
                     </div>
 
                     <div className="bg-[#F8FAFC] p-2 rounded-2xl border border-slate-200/60 text-center">
                       <div className="flex items-center justify-center gap-1 text-[9px] font-extrabold text-slate-400 uppercase">
                         <NavigationIcon className="w-3 h-3 text-[#059669]" /> Range
                       </div>
-                      <div className="text-sm font-black text-[#059669] mt-0.5">{batteryState.estimatedRange} km</div>
+                      <div className="text-sm font-black text-[#059669] mt-0.5 leading-tight">
+                        {batteryState.estimatedRange || 0} <span className="block text-[10px] font-extrabold">km</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -866,8 +885,8 @@ export function App() {
                         </h4>
                         <p className="text-[9px] font-semibold text-slate-400">
                           {batteryState.connectionState === 'CONNECTED'
-                            ? (batteryState.safetyState === 'HEALTHY' ? 'Live readings are within normal limits' : batteryState.safetyState === 'CRITICAL' ? 'Critical battery fault reported' : batteryState.safetyState === 'WARNING' ? 'Battery warning: check live readings' : 'Monitor battery condition')
-                            : 'Connect Bluetooth BMS to inspect live SOH & PINN metrics'}
+                            ? (batteryState.safetyState === 'HEALTHY' ? 'Overall battery condition is healthy' : 'Attention required for cell balance')
+                            : 'Connect Bluetooth BMS to stream live telemetry'}
                         </p>
                       </div>
                     </div>
@@ -927,8 +946,8 @@ export function App() {
                       className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-1 cursor-pointer hover:border-emerald-300 transition"
                     >
                       <Zap className="w-4 h-4 text-[#059669]" />
-                      <div className="text-[8px] font-extrabold text-slate-400 uppercase">Voltage</div>
-                      <div className="text-xs font-black text-[#059669]">{batteryState.voltage} V</div>
+                      <div className="text-[8px] font-extrabold text-slate-400 uppercase tracking-tight truncate">Voltage</div>
+                      <div className="text-xs font-black text-[#059669]">{(batteryState.voltage || 0).toFixed(1)} V</div>
                     </div>
 
                     <div
@@ -936,8 +955,8 @@ export function App() {
                       className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-1 cursor-pointer hover:border-emerald-300 transition"
                     >
                       <Activity className="w-4 h-4 text-[#2563EB]" />
-                      <div className="text-[8px] font-extrabold text-slate-400 uppercase">Current</div>
-                      <div className="text-xs font-black text-[#2563EB]">{batteryState.current} A</div>
+                      <div className="text-[8px] font-extrabold text-slate-400 uppercase tracking-tight truncate">Current</div>
+                      <div className="text-xs font-black text-[#2563EB]">{(batteryState.current || 0).toFixed(2)} A</div>
                     </div>
 
                     <div
@@ -945,8 +964,8 @@ export function App() {
                       className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-1 cursor-pointer hover:border-emerald-300 transition"
                     >
                       <Cpu className="w-4 h-4 text-[#9333EA]" />
-                      <div className="text-[8px] font-extrabold text-slate-400 uppercase">Power</div>
-                      <div className="text-xs font-black text-[#9333EA]">{batteryState.power} kW</div>
+                      <div className="text-[8px] font-extrabold text-slate-400 uppercase tracking-tight truncate">Power</div>
+                      <div className="text-xs font-black text-[#9333EA]">{(batteryState.power || 0).toFixed(2)} kW</div>
                     </div>
 
                     <div
@@ -954,8 +973,8 @@ export function App() {
                       className="bg-white p-2.5 rounded-2xl border border-slate-200/80 shadow-2xs space-y-1 cursor-pointer hover:border-emerald-300 transition"
                     >
                       <Thermometer className="w-4 h-4 text-[#EA580C]" />
-                      <div className="text-[8px] font-extrabold text-slate-400 uppercase">Temperature</div>
-                      <div className="text-xs font-black text-[#EA580C]">{batteryState.maxTemperature || batteryState.temperature} °C</div>
+                      <div className="text-[8px] font-extrabold text-slate-400 uppercase tracking-tight truncate">Temperature</div>
+                      <div className="text-xs font-black text-[#EA580C]">{(batteryState.maxTemperature || batteryState.temperature || 0).toFixed(1)} °C</div>
                     </div>
                   </div>
                 </div>
@@ -1004,118 +1023,6 @@ export function App() {
                     </div>
                   );
                 })()}
-
-                {/* RECENT ALERTS CARD (DYNAMIC) */}
-                <div className="bg-white rounded-3xl p-3.5 border border-slate-200/80 shadow-2xs space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-xl bg-red-50 text-red-500">
-                        <Bell className="w-4 h-4" />
-                      </div>
-                      <h4 className="text-xs font-black text-slate-900">Recent Alerts</h4>
-                    </div>
-                    <button
-                      onClick={() => setActiveDrawerItem('alerts')}
-                      className="text-[10px] font-extrabold text-[#059669] hover:underline cursor-pointer"
-                    >
-                      View All
-                    </button>
-                  </div>
-
-                  {(() => {
-                    const pinn = PinnEngine.evaluatePhysicsModel(batteryState);
-                    const maxTemp = batteryState.maxTemperature || batteryState.temperature;
-                    const activeAlerts: { title: string; desc: string; type: 'warning' | 'error' | 'info' }[] = [];
-
-                    if (batteryState.connectionState === 'DISCONNECTED') {
-                      activeAlerts.push({
-                        title: 'BLE Disconnected (0V Zero State)',
-                        desc: 'Connect battery via BLE GATT service to stream live parameters.',
-                        type: 'info',
-                      });
-                    }
-                    if (batteryState.connectionState === 'CONNECTED' && batteryState.safetyState !== 'HEALTHY') {
-                      activeAlerts.push({
-                        title: `BMS ${batteryState.safetyState} condition`,
-                        desc: `Live BMS risk score: ${Math.round(batteryState.risk)}%. Inspect the fault details and affected cells.`,
-                        type: batteryState.safetyState === 'CRITICAL' ? 'error' : 'warning',
-                      });
-                    } else if (batteryState.connectionState === 'CONNECTED' && pinn.thermalRunawayRiskPct >= 18) {
-                      activeAlerts.push({
-                        title: `${pinn.overallRiskLevel} battery risk`,
-                        desc: `Live risk estimate is ${pinn.thermalRunawayRiskPct}%. ${pinn.recommendations[0]}`,
-                        type: pinn.overallRiskLevel === 'CRITICAL' ? 'error' : 'warning',
-                      });
-                    }
-                    const abnormalCells = batteryState.cells.filter((cell) => cell.status === 'WATCH' || cell.status === 'WARNING' || cell.status === 'CRITICAL');
-                    if (abnormalCells.length > 0) {
-                      activeAlerts.push({
-                        title: `Abnormal cell${abnormalCells.length > 1 ? 's' : ''} detected`,
-                        desc: `Cell${abnormalCells.length > 1 ? 's' : ''} ${abnormalCells.map((cell) => cell.id).join(', ')} flagged by the BMS.`,
-                        type: abnormalCells.some((cell) => cell.status === 'CRITICAL') ? 'error' : 'warning',
-                      });
-                    }
-                    if (pinn.cellImbalanceIndex > 0.025) {
-                      activeAlerts.push({
-                        title: 'Cell Imbalance Warning',
-                        desc: `Cell variance is ${(pinn.cellImbalanceIndex * 1000).toFixed(0)}mV. Passive balancing recommended.`,
-                        type: 'warning',
-                      });
-                    }
-                    if (maxTemp > 40) {
-                      activeAlerts.push({
-                        title: 'Elevated Temperature Warning',
-                        desc: `Max pack temp reached ${maxTemp}°C (Normal: 25-38°C). Avoid fast charging.`,
-                        type: maxTemp > 50 ? 'error' : 'warning',
-                      });
-                    }
-                    if (batteryState.soc > 0 && batteryState.soc < 20) {
-                      activeAlerts.push({
-                        title: 'Low State of Charge (SOC < 20%)',
-                        desc: `Battery level is at ${Math.round(batteryState.soc)}%. Connect charger soon.`,
-                        type: 'warning',
-                      });
-                    }
-
-                    if (activeAlerts.length > 0) {
-                      return (
-                        <div className="space-y-1.5">
-                          {activeAlerts.slice(0, 3).map((alert, idx) => (
-                            <div
-                              key={idx}
-                              onClick={() => setActiveDrawerItem('alerts')}
-                              className={`flex items-start gap-2.5 p-2 rounded-2xl border cursor-pointer transition ${
-                                alert.type === 'error'
-                                  ? 'bg-red-50/90 border-red-200 text-red-900 hover:bg-red-100'
-                                  : alert.type === 'warning'
-                                  ? 'bg-amber-50/90 border-amber-200 text-amber-900 hover:bg-amber-100'
-                                  : 'bg-blue-50/90 border-blue-200 text-blue-900 hover:bg-blue-100'
-                              }`}
-                            >
-                              <AlertCircle className={`w-4 h-4 mt-0.5 shrink-0 ${
-                                alert.type === 'error' ? 'text-red-600' : alert.type === 'warning' ? 'text-amber-600' : 'text-blue-600'
-                              }`} />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-xs font-extrabold truncate">{alert.title}</div>
-                                <div className="text-[9px] font-semibold opacity-80 leading-tight mt-0.5">{alert.desc}</div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div className="flex items-center gap-2.5 p-2 bg-[#F8FAFC] rounded-2xl border border-slate-100">
-                        <CheckCircle2 className="w-4 h-4 text-[#059669] shrink-0" />
-                        <div>
-                          <div className="text-xs font-extrabold text-slate-900">No active alerts</div>
-                          <div className="text-[9px] font-semibold text-slate-400">Live telemetry reports no current warning signals.</div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
 
               </div>
             )}

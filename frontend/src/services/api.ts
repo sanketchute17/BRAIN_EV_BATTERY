@@ -150,6 +150,34 @@ function saveLocalUserDB(email: string, userData: any) {
   localStorage.setItem(LOCAL_USERS_DB_KEY, JSON.stringify(db));
 }
 
+export function encodeFirebaseProfilePhotoUrl(profile: any): string {
+  const metadata = {
+    m: profile.mobile || profile.mobileNumber || profile.phone || '',
+    r: profile.role || 'EV Rider / Owner',
+    ev: profile.ev_model || profile.evModel || 'Ather 450X',
+    ch: profile.battery_chemistry || profile.batteryChemistry || 'NMC',
+  };
+  return JSON.stringify(metadata);
+}
+
+export function decodeFirebaseProfilePhotoUrl(photoURL?: string | null): any {
+  if (!photoURL) return null;
+  try {
+    if (photoURL.startsWith('{')) {
+      const parsed = JSON.parse(photoURL);
+      return {
+        mobile: parsed.m || parsed.mobile || '',
+        role: parsed.r || parsed.role || 'EV Rider / Owner',
+        ev_model: parsed.ev || parsed.ev_model || parsed.evModel || 'Ather 450X',
+        battery_chemistry: parsed.ch || parsed.battery_chemistry || parsed.batteryChemistry || 'NMC',
+      };
+    }
+  } catch (e) {
+    // Ignore non-JSON photoURL
+  }
+  return null;
+}
+
 export const apiService = {
   getStoredToken(): string | null {
     try {
@@ -247,10 +275,13 @@ export const apiService = {
         const userRec = emailToUse ? localUsers[emailToUse] : null;
         const userAvatar = emailToUse ? localStorage.getItem(`brain_avatar_${emailToUse}`) : null;
 
-        let mobileVal = parsed.mobile || parsed.mobileNumber || userRec?.mobile || userRec?.mobileNumber || '';
+        const fbDecoded = decodeFirebaseProfilePhotoUrl(user.photoURL);
+
+        let mobileVal = parsed.mobile || parsed.mobileNumber || fbDecoded?.mobile || userRec?.mobile || userRec?.mobileNumber || '';
         let fullNameVal = user.displayName || parsed.full_name || parsed.fullName || userRec?.fullName || userRec?.full_name || 'EV Operator';
-        let evModelVal = parsed.ev_model || parsed.evModel || userRec?.evModel || userRec?.ev_model || 'Ather 450X';
-        let chemistryVal = parsed.battery_chemistry || parsed.batteryChemistry || userRec?.batteryChemistry || userRec?.battery_chemistry || 'NMC';
+        let evModelVal = parsed.ev_model || parsed.evModel || fbDecoded?.ev_model || userRec?.evModel || userRec?.ev_model || 'Ather 450X';
+        let chemistryVal = parsed.battery_chemistry || parsed.batteryChemistry || fbDecoded?.battery_chemistry || userRec?.batteryChemistry || userRec?.battery_chemistry || 'NMC';
+        let roleVal = parsed.role || fbDecoded?.role || userRec?.role || 'EV Rider / Owner';
 
         // Auto-heal missing profile details (e.g., mobile number) on cross-device login
         if ((!mobileVal || fullNameVal === 'EV Operator') && emailToUse) {
@@ -261,36 +292,31 @@ export const apiService = {
               fullNameVal = cloudRec.full_name || cloudRec.fullName || fullNameVal;
               evModelVal = cloudRec.ev_model || cloudRec.evModel || evModelVal;
               chemistryVal = cloudRec.battery_chemistry || cloudRec.batteryChemistry || chemistryVal;
-
-              const healedProfile = {
-                id: user.uid,
-                email: user.email,
-                full_name: fullNameVal,
-                mobile: mobileVal,
-                role: parsed.role || userRec?.role || cloudRec.role || 'EV Rider / Owner',
-                ev_model: evModelVal,
-                battery_chemistry: chemistryVal,
-                avatar_photo: userAvatar || parsed.avatar_photo || '',
-              };
-              saveLocalUserDB(emailToUse, healedProfile);
-              try {
-                localStorage.setItem(`brain_profile_${emailToUse}`, JSON.stringify(healedProfile));
-                localStorage.setItem('brain_user_profile', JSON.stringify(healedProfile));
-              } catch (e) {}
+              roleVal = cloudRec.role || roleVal;
             }
           } catch (e) {}
         }
 
-        return {
+        const healedProfile = {
           id: user.uid,
           email: user.email,
           full_name: fullNameVal,
           mobile: mobileVal,
-          role: parsed.role || userRec?.role || 'EV Rider / Owner',
+          role: roleVal,
           ev_model: evModelVal,
           battery_chemistry: chemistryVal,
           avatar_photo: userAvatar || parsed.avatar_photo || '',
         };
+
+        if (emailToUse) {
+          saveLocalUserDB(emailToUse, healedProfile);
+          try {
+            localStorage.setItem(`brain_profile_${emailToUse}`, JSON.stringify(healedProfile));
+            localStorage.setItem('brain_user_profile', JSON.stringify(healedProfile));
+          } catch (e) {}
+        }
+
+        return healedProfile;
       }
     }
 
@@ -436,19 +462,28 @@ export const apiService = {
         const fbUser = userCredential.user;
         const idToken = await fbUser.getIdToken();
 
-        // Fetch cross-device cloud profile from Firebase Realtime DB
+        // Decode metadata stored in Firebase Auth user profile photoURL
+        const fbDecoded = decodeFirebaseProfilePhotoUrl(fbUser.photoURL);
+
+        // Fetch cross-device cloud profile from Firebase Realtime DB / REST fallback if available
         let cloudUserRec = await firebaseSyncService.getCloudUserProfile(emailKey).catch(() => null);
+
+        const fullNameVal = fbUser.displayName || cloudUserRec?.full_name || cloudUserRec?.fullName || 'EV Operator';
+        const mobileVal = fbDecoded?.mobile || cloudUserRec?.mobile || cloudUserRec?.mobileNumber || cloudUserRec?.phone || '';
+        const roleVal = fbDecoded?.role || cloudUserRec?.role || 'EV Rider / Owner';
+        const evModelVal = fbDecoded?.ev_model || cloudUserRec?.ev_model || cloudUserRec?.evModel || 'Ather 450X';
+        const chemistryVal = fbDecoded?.battery_chemistry || cloudUserRec?.battery_chemistry || cloudUserRec?.batteryChemistry || 'NMC';
 
         const userAvatar = localStorage.getItem(`brain_avatar_${emailKey}`);
         const authData: AuthResponse = {
           access_token: idToken,
           user_id: fbUser.uid,
           email: fbUser.email || emailKey,
-          full_name: cloudUserRec?.full_name || cloudUserRec?.fullName || fbUser.displayName || 'EV Operator',
-          mobile: cloudUserRec?.mobile || '',
-          role: cloudUserRec?.role || 'EV Rider / Owner',
-          ev_model: cloudUserRec?.ev_model || cloudUserRec?.evModel || 'Ather 450X',
-          battery_chemistry: cloudUserRec?.battery_chemistry || cloudUserRec?.batteryChemistry || 'NMC',
+          full_name: fullNameVal,
+          mobile: mobileVal,
+          role: roleVal,
+          ev_model: evModelVal,
+          battery_chemistry: chemistryVal,
           avatar_photo: userAvatar || cloudUserRec?.avatar_photo || '',
         };
         saveLocalUserDB(emailKey, authData);
@@ -534,30 +569,42 @@ export const apiService = {
     // 3. Register or Re-Authenticate in Firebase Cloud Auth
     if (isFirebaseConfigured() && firebaseAuth) {
       try {
-        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
-        const fbUser = userCredential.user;
-        await updateProfile(fbUser, { displayName: newUserRecord.fullName }).catch(() => {});
-      } catch (fbErr: any) {
-        if (fbErr.code === 'auth/email-already-in-use') {
-          // If already registered in Firebase Auth, attempt sign in so user session is active for DB sync
-          try {
-            await signInWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
-          } catch (signInErr: any) {
-            if (signInErr.code === 'auth/wrong-password' || signInErr.code === 'auth/invalid-credential') {
-              throw new Error('This email is already registered with a different password. Please sign in or use a different password.');
+        let fbUser: FirebaseUser | null = null;
+        try {
+          const userCredential = await createUserWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
+          fbUser = userCredential.user;
+        } catch (fbErr: any) {
+          if (fbErr.code === 'auth/email-already-in-use') {
+            try {
+              const signInCred = await signInWithEmailAndPassword(firebaseAuth, emailKey, cleanPassword);
+              fbUser = signInCred.user;
+            } catch (signInErr: any) {
+              if (signInErr.code === 'auth/wrong-password' || signInErr.code === 'auth/invalid-credential') {
+                throw new Error('This email is already registered with a different password. Please sign in or use a different password.');
+              }
             }
+          } else if (fbErr.code === 'auth/weak-password') {
+            throw new Error('Password should be at least 6 characters long.');
+          } else if (fbErr.code === 'auth/invalid-email') {
+            throw new Error('Invalid email address format. Please check your email.');
+          } else {
+            console.warn('Firebase Auth registration notice:', fbErr);
           }
-        } else if (fbErr.code === 'auth/weak-password') {
-          throw new Error('Password should be at least 6 characters long.');
-        } else if (fbErr.code === 'auth/invalid-email') {
-          throw new Error('Invalid email address format. Please check your email.');
-        } else {
-          console.warn('Firebase Auth registration notice:', fbErr);
         }
+
+        if (fbUser) {
+          const photoMetaStr = encodeFirebaseProfilePhotoUrl(newUserRecord);
+          await updateProfile(fbUser, {
+            displayName: newUserRecord.fullName,
+            photoURL: photoMetaStr,
+          }).catch((err) => console.warn('Firebase Auth updateProfile metadata notice:', err));
+        }
+      } catch (err: any) {
+        if (err.message) throw err;
       }
     }
 
-    // 4. Save cloud user profile to Firebase Realtime Database for cross-device access!
+    // 4. Save cloud user profile to Firebase Realtime Database / REST for cross-device access!
     await Promise.race([
       firebaseSyncService.saveCloudUserProfile(newUserRecord),
       new Promise((resolve) => setTimeout(resolve, 1500)),
@@ -592,6 +639,17 @@ export const apiService = {
    * Update User Profile Details & Specs across Backend / Cloud DB / Local DB
    */
   async updateUserProfile(updatedUser: any): Promise<any> {
+    // 0. Update Firebase Auth user profile metadata
+    if (isFirebaseConfigured() && firebaseAuth?.currentUser) {
+      try {
+        const photoMetaStr = encodeFirebaseProfilePhotoUrl(updatedUser);
+        await updateProfile(firebaseAuth.currentUser, {
+          displayName: updatedUser.full_name || updatedUser.fullName || 'EV Operator',
+          photoURL: photoMetaStr,
+        }).catch(() => {});
+      } catch (e) {}
+    }
+
     // 1. Update Supabase User Metadata if configured
     if (isSupabaseConfigured() && supabase) {
       try {

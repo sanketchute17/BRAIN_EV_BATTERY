@@ -23,7 +23,7 @@ class BatteryStateService {
   private connectionStartTime: number | null = null;
   private lastPacketArrivalMs: number | null = null;
 
-  // System notifications state feed (starts empty, populates on live BLE/safety events)
+  // System notifications state feed (starts empty until active events/connections occur)
   private notifications: SystemNotification[] = [];
 
   // Initial State for BRAIN Virtual Battery Simulation (8S LFP)
@@ -36,8 +36,8 @@ class BatteryStateService {
     lastUpdated: new Date().toISOString(),
     soc: 0,
     soh: 0,
-    voltage: 0.00,
-    current: 0.00,
+    voltage: 0.0,
+    current: 0.0,
     power: 0.0,
     temperature: 0.0,
     maxTemperature: 0.0,
@@ -57,9 +57,9 @@ class BatteryStateService {
     },
     cells: Array.from({ length: 8 }, (_, i) => ({
       id: i + 1,
-      voltage: 0.00,
+      voltage: 0.0,
       temperature: 0.0,
-      deviation: 0.00,
+      deviation: 0.0,
       risk: 0,
       status: 'HEALTHY' as HealthStatus,
     })),
