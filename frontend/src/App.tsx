@@ -24,6 +24,7 @@ import { ResearchDrawer } from './components/drawers/ResearchDrawer';
 import { ReportsDrawer } from './components/drawers/ReportsDrawer';
 import { SettingsDrawer } from './components/drawers/SettingsDrawer';
 import { CompanyAdminDrawer } from './components/drawers/CompanyAdminDrawer';
+import { BatteryTrendsDrawer } from './components/drawers/BatteryTrendsDrawer';
 import { firebaseSyncService } from './services/firebaseSyncService';
 import { PinnEngine } from './services/pinnEngine';
 import {
@@ -751,6 +752,8 @@ export function App() {
               </div>
             ) : activeDrawerItem === 'company' ? (
               <CompanyAdminDrawer batteryState={batteryState} onBack={() => setActiveDrawerItem(null)} />
+            ) : activeDrawerItem === 'trends' ? (
+              <BatteryTrendsDrawer batteryState={batteryState} onBack={() => setActiveDrawerItem(null)} />
             ) : activeDrawerItem === 'doctor' ? (
               <DoctorDrawer batteryState={batteryState} onBack={() => setActiveDrawerItem(null)} />
             ) : activeDrawerItem === 'assistant' ? (

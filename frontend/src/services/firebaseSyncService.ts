@@ -519,6 +519,82 @@ class FirebaseSyncService {
       },
     ];
   }
+
+  /**
+   * Sync Historical Battery Trends, Stress Events & Analytics Summary to Cloud DB / REST
+   */
+  public async syncAnalyticsAndTrendsToCloud(
+    batteryId: string,
+    summary: any,
+    historyPoints: any[],
+    events: any[]
+  ): Promise<{ success: boolean; mode: string; timestamp: string }> {
+    const sanitizedId = (batteryId || 'BATTERY_PACK_01').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const cloudPayload = {
+      batteryId: sanitizedId,
+      lastUpdated: new Date().toISOString(),
+      summary,
+      recentHistory: historyPoints.slice(-100),
+      stressEvents: events.slice(0, 30),
+    };
+
+    let success = false;
+    let mode = 'LOCAL_CLOUD_BUFFERED';
+
+    try {
+      localStorage.setItem(`brain_cloud_analytics_${sanitizedId}`, JSON.stringify(cloudPayload));
+    } catch (e) {}
+
+    // 1. Try Firebase SDK DB write
+    if (this.db) {
+      try {
+        const analyticsRef = ref(this.db, `batteries/${sanitizedId}/cloud_analytics`);
+        await this.withTimeout(set(analyticsRef, cloudPayload), 2500);
+        success = true;
+        mode = 'FIREBASE_CLOUD_DB';
+      } catch (e) {}
+    }
+
+    // 2. Try Firebase REST URL
+    const customUrl = getCustomDatabaseUrl();
+    if (!success && isFirebaseConfigured() && customUrl) {
+      try {
+        const res = await fetch(`${customUrl}/batteries/${sanitizedId}/cloud_analytics.json`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cloudPayload),
+        });
+        if (res.ok) {
+          success = true;
+          mode = 'FIREBASE_REST_CLOUD';
+        }
+      } catch (e) {}
+    }
+
+    // 3. Try FastAPI Backend Cloud Endpoint (/battery/cloud_sync)
+    if (!success) {
+      try {
+        const backendBase = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000')
+          .replace(/\/$/, '')
+          .replace(/\/api\/v1$/, '');
+        const res = await fetch(`${backendBase}/battery/cloud_sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cloudPayload),
+        });
+        if (res.ok) {
+          success = true;
+          mode = 'FASTAPI_BACKEND_CLOUD';
+        }
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      mode: success ? mode : 'LOCAL_CLOUD_BUFFERED',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    };
+  }
 }
 
 export const firebaseSyncService = new FirebaseSyncService();

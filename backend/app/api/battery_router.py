@@ -80,10 +80,16 @@ class ExternalTelemetryRequest(BaseModel):
 
 @router.get("/health")
 def get_health():
-    """Service health check endpoint."""
+    """Service health check endpoint with database connectivity check."""
+    from app.core.database import check_database_connection
+    from app.core.config import settings
+    
+    is_db_connected = check_database_connection()
     return {
-        "status": "ok",
-        "service": "BRAIN Battery Intelligence Engine",
+        "status": "ok" if is_db_connected else "degraded",
+        "service": "brain-api",
+        "environment": settings.ENVIRONMENT,
+        "database": "connected" if is_db_connected else "disconnected",
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "telemetry_rate_hz": twin_service.telemetry_rate_hz,
         "history_buffer_size": twin_service.history_buffer_size
@@ -254,6 +260,54 @@ def set_simulation_scenario(req: ScenarioControlRequest):
     """
     res = twin_service.set_scenario(scenario=req.scenario, load_current_A=req.load_current_A)
     return res
+
+# ── Cloud Analytics & Historical Sync Endpoints ───────────────────────────────
+
+cloud_sync_storage: Dict[str, Any] = {}
+
+class CloudSyncPayload(BaseModel):
+    batteryId: Optional[str] = "BATTERY_PACK_01"
+    lastUpdated: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+    recentHistory: Optional[List[Dict[str, Any]]] = None
+    stressEvents: Optional[List[Dict[str, Any]]] = None
+
+@router.post("/battery/cloud_sync")
+def receive_cloud_sync(payload: CloudSyncPayload):
+    """
+    Receive & store detailed battery trends, stress event analytics, and historical snapshots in cloud repository.
+    """
+    battery_id = payload.batteryId or "BATTERY_PACK_01"
+    cloud_sync_storage[battery_id] = {
+        "batteryId": battery_id,
+        "lastUpdated": payload.lastUpdated or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "summary": payload.summary,
+        "recentHistory": payload.recentHistory or [],
+        "stressEvents": payload.stressEvents or [],
+        "status": "CLOUD_SYNCED"
+    }
+    return {
+        "status": "SUCCESS",
+        "message": f"Cloud analytics synced for battery {battery_id}",
+        "timestamp": cloud_sync_storage[battery_id]["lastUpdated"]
+    }
+
+@router.get("/battery/cloud_sync")
+def get_cloud_sync_data(battery_id: Optional[str] = "BATTERY_PACK_01"):
+    """
+    Retrieve stored cloud battery analytics and trends snapshot.
+    """
+    bid = battery_id or "BATTERY_PACK_01"
+    if bid in cloud_sync_storage:
+        return cloud_sync_storage[bid]
+    return {
+        "batteryId": bid,
+        "status": "NO_CLOUD_DATA_BUFFERED",
+        "lastUpdated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "summary": None,
+        "recentHistory": [],
+        "stressEvents": []
+    }
 
 # ── WebSocket Telemetry Stream ────────────────────────────────────────────────
 

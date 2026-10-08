@@ -2,7 +2,7 @@ import React from 'react';
 import { Home, BatteryCharging, ShieldAlert, Box, LineChart, User, Menu } from 'lucide-react';
 
 export type TabType = 'home' | 'battery' | 'guardian' | 'simulator' | 'analytics' | 'profile';
-export type DrawerType = 'doctor' | 'assistant' | 'twin' | 'charging' | 'alerts' | 'bms' | 'research' | 'reports' | 'settings' | 'company';
+export type DrawerType = 'doctor' | 'assistant' | 'twin' | 'charging' | 'alerts' | 'bms' | 'research' | 'reports' | 'settings' | 'company' | 'trends';
 
 interface NavigationProps {
   activeTab: TabType;

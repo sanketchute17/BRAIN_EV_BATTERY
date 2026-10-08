@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Stethoscope, MessageSquare, Flame, Zap, AlertTriangle, Radio, BookOpen, FileText, Settings, Building2, ChevronRight } from 'lucide-react';
+import { X, Stethoscope, MessageSquare, Flame, Zap, AlertTriangle, Radio, BookOpen, FileText, Settings, Building2, ChevronRight, TrendingUp } from 'lucide-react';
 import type { DrawerType } from './Navigation';
 
 interface MenuDrawerProps {
@@ -18,6 +18,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   if (!isOpen) return null;
 
   const menuItems = [
+    { id: 'trends', label: 'Battery Trends & Stress', icon: TrendingUp, tag: 'ANALYTICS' },
     { id: 'doctor', label: 'AI Battery Doctor', icon: Stethoscope, tag: 'DIAGNOSTICS' },
     { id: 'assistant', label: 'BRAIN Assistant', icon: MessageSquare, tag: 'CONVERSATIONAL' },
     { id: 'twin', label: 'Digital Twin Visualizer', icon: Flame, tag: '3D TWIN' },
